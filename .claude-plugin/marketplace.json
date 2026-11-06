@@ -1,0 +1,12 @@
+{
+  "name": "riffled-mods",
+  "owner": {
+    "name": "djriffle"
+  },
+  "plugins": [
+    {
+      "name": "reality-plus",
+      "source": "./reality-plus"
+    }
+  ]
+}
