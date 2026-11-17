@@ -112,6 +112,18 @@ export type GitData = {
 // Notifications (hooks/notify.tsx): the latest event; the wave's lead ship carries its tag for one lap.
 export type Notice = { id: number; text: string; tag: string; kind: 'pass' | 'fail' | 'info'; born: number }
 
+// /waiting box (hooks/waiting.tsx): a running agent, background shell or Monitor; ended rows hold a check, then go.
+export type WaitItem = {
+  kind: 'agent' | 'shell' | 'monitor'
+  status?: string
+  label: string
+  detail?: string
+  startedAt: number
+  endedAt?: number
+  endedPhase?: number
+  ok?: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'reality-plus': {
@@ -126,6 +138,11 @@ declare module 'claude-code' {
       'wave-on': boolean
       'notify-latest': Shaped<Notice | null>
       'wave-phase': number
+      'waiting-on': boolean
+      'waiting-phase': number
+      'waiting-items': Shaped<Record<string, WaitItem>>
+      'waiting-ended': Shaped<string[]>
+      'holding-on': boolean
       'git-prs-all': boolean
       'git-views': Shaped<Record<string, boolean>>
       hud: Shaped<Hud>

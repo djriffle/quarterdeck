@@ -10,6 +10,8 @@ import { registerWorkPanel, toggleTabs } from './workpanel'
 import { registerWindDown } from './winddown'
 import { registerWave, waveRows } from './wave'
 import { registerNotify } from './notify'
+import { registerWaiting, waitingBox } from './waiting'
+import { holdingBar, registerHolding } from './holding'
 
 // Colours are theme keys, so the skin follows ~/.claude/themes/reality-plus.json
 // (pick "Reality+" in /theme): Claude's traditional orange #D77757 as the one
@@ -32,6 +34,7 @@ const wavePhase = atom({ plugin: 'reality-plus', key: 'wave-phase' } as const, 0
 const notifyLatest = atom({ plugin: 'reality-plus', key: 'notify-latest' } as const, null as Notice | null, { shape: 'notify-1' })
 
 const SESSION_EVERY_MS = 30_000
+const NAME_EVERY_MS = 5_000 // a /rename should show within seconds
 const modelName = atom({ plugin: 'reality-plus', key: 'model' } as const, '')
 
 // claude-opus-5-5 -> "Opus 5.5"; an id that does not follow that shape is shown as is.
@@ -59,6 +62,8 @@ export const register: Register = on => {
   registerWindDown(on)
   registerWave(on)
   registerNotify(on)
+  registerWaiting(on)
+  registerHolding(on)
   let project = 'SESSION'
 
   on('session.start', async ($, e, next) => {
@@ -87,7 +92,10 @@ export const register: Register = on => {
     run()
     $.clock.every(HUD_EVERY_MS, run)
 
-    // Session name: the last /rename title recorded in this session's transcript.
+    // Session name. Current Claude Code keeps the /rename title in a sidecar file,
+    // <project dir>/<session id>/custom-title.json; sessions from older versions recorded it as
+    // "custom-title" rows in the transcript instead. The sidecar is read first; the transcript only
+    // when a session has no sidecar (it never had one written).
     const home = (await $.process.run(['printenv', 'HOME'])).stdout.trim()
     let transcript: string | undefined
     let transcriptOf: string | undefined
@@ -106,7 +114,15 @@ export const register: Register = on => {
           return
         }
       }
-      const g = await $.process.run(['grep', '-o', '"customTitle":"[^"]*"', transcript])
+      const sidecar = transcript.replace(/\.jsonl$/, '/custom-title.json')
+      if (await $.fs.exists(sidecar)) {
+        const parsed = JSON.parse(String(await $.fs.read(sidecar))) as { customTitle?: unknown }
+        if (typeof parsed.customTitle !== 'string') throw new Error(`${sidecar} has no customTitle string`)
+        const name = parsed.customTitle
+        await update($, sessionName, s => (s.name === name && !s.error ? s : { name }))
+        return
+      }
+      const g = await $.process.run(['grep', '-o', '"customTitle":"\\([^"\\\\]\\|\\\\.\\)*"', transcript])
       if (g.exitCode === 1) {
         await update($, sessionName, () => ({}))
         return
@@ -117,13 +133,13 @@ export const register: Register = on => {
       }
       const last = g.stdout.trim().split('\n').pop() ?? ''
       const name = (JSON.parse(`{${last}}`) as { customTitle: string }).customTitle
-      await update($, sessionName, () => ({ name }))
+      await update($, sessionName, s => (s.name === name && !s.error ? s : { name }))
     }
     const runName = () => {
       refreshName().catch(err => $.ui.log(`reality-plus session-name refresh failed: ${String(err)}`))
     }
     runName()
-    $.clock.every(SESSION_EVERY_MS, runName)
+    $.clock.every(NAME_EVERY_MS, runName)
 
     // The model can change mid-session (/model), so it is re-read on the same beat.
     const runModel = () => {
@@ -257,10 +273,14 @@ export const register: Register = on => {
             ))}
           </Text>
         )) : []
-    if (!showGoal && !waving) return strip
+    const waitBox = await waitingBox($, e, room)
+    const holdBar = await holdingBar($, e, room)
+    if (!showGoal && !waving && !waitBox && !holdBar) return strip
     return (
       <Box flexDirection="column">
+        {holdBar}
         {wave}
+        {waitBox}
         {strip}
         {showGoal && (
         <Text wrap="truncate-end">
