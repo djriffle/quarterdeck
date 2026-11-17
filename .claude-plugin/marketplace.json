@@ -7,6 +7,10 @@
     {
       "name": "reality-plus",
       "source": "./reality-plus"
+    },
+    {
+      "name": "reality-plus-noslurm",
+      "source": "./reality-plus-noslurm"
     }
   ]
 }

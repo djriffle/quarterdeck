@@ -1,6 +1,13 @@
 # claude-mods
 
-Personal Claude Code mods, as a plugin marketplace.
+Personal Claude Code mods, as a plugin marketplace (`riffled-mods`).
+
+| Mod | For |
+| --- | --- |
+| `reality-plus` | The full skin, including Slurm queue views. Use it on an HPC cluster where `squeue` is available. |
+| `reality-plus-noslurm` | The same skin with every Slurm feature removed. Use it on a laptop or any machine without a scheduler. |
+
+Install one or the other, not both: they register the same commands (`/tabs`, `/wave`, `/waiting`, ...).
 
 ## reality-plus
 
@@ -14,11 +21,40 @@ A skin for the Claude Code terminal UI:
 - Folded tool rows, coloured Bash and diff cards
 - `/wrap-up` handoff and `/wind-down` resume prep
 
-### Install
+## reality-plus-noslurm
+
+`reality-plus` without Slurm. Everything else is identical. Removed:
+
+- the SLURM ▶/⏸ counts in the HUD strip
+- the Slurm tab and `/slurm` (TABS and `/tabs` toggle Work, Git, Files and Notes)
+- the Slurm preview in the Work tab
+- "job left the queue" notifications (the wave still carries PR checks and reviews)
+- the Slurm step of the `/wind-down` brief, which now asks to record any long-running jobs or processes instead
+
+It never calls `squeue`. Its state and notes live under its own name (`~/.claude/mods-data/reality-plus-noslurm/notes/`), separate from `reality-plus`.
+
+## Theme
+
+Both mods colour themselves from theme keys. The matching theme ships as `reality-plus/reality-plus.theme.json` ("Reality+": OpenCode neutrals, Claude orange `#D77757` accent, cyan `#5EB0BA`, lavender `#A99CF0`). Install it with:
+
+```
+mkdir -p ~/.claude/themes
+cp reality-plus/reality-plus.theme.json ~/.claude/themes/reality-plus.json
+```
+
+then set `"theme": "custom:reality-plus"` in `~/.claude/settings.json`.
+
+## Install
 
 ```
 /plugin marketplace add djriffle/claude-mods
 /plugin install reality-plus@riffled-mods
 ```
 
-Check and test with `claude plugin validate reality-plus` and `claude plugin test reality-plus`.
+or, without Slurm:
+
+```
+/plugin install reality-plus-noslurm@riffled-mods
+```
+
+Check and test with `claude plugin validate <mod>` and `claude plugin test <mod>` (run `test` from inside the mod's directory).
