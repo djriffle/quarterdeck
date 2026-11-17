@@ -98,6 +98,16 @@ export const tombstone = (ended: string[], items: Record<string, WaitItem>) => {
   return add.length ? [...ended, ...add].slice(-TOMBSTONES) : ended
 }
 
+// A Monitor whose timeout has run out has ended, whether or not a notification said so: an expiry
+// notice carries no <status> tag, and the end-of-turn reconcile may never run (another plugin's
+// classic.Stop hook can answer first), so without this the row would spin forever.
+export const expire = (items: Record<string, WaitItem>, phase: number, now: number) => {
+  let out = items
+  for (const [k, v] of Object.entries(items))
+    if (v.deadline !== undefined && v.endedPhase === undefined && now >= v.deadline) out = endTask(out, k.slice('task:'.length), 'expired', phase, now)
+  return out
+}
+
 // Rows whose hold has run out are dropped.
 export const prune = (items: Record<string, WaitItem>, phase: number) => {
   const out: Record<string, WaitItem> = {}
@@ -129,7 +139,8 @@ async function frame($: Engine) {
   const now = Date.now()
   if (phase % POLL_EVERY === 0) {
     const agents = await $.agent.list()
-    await update($, waitItems, items => prune(foldAgents(items, agents, phase, now), phase))
+    const items = await update($, waitItems, items => prune(expire(foldAgents(items, agents, phase, now), phase, now), phase))
+    await update($, waitEnded, ended => tombstone(ended, items))
   }
 }
 
@@ -228,11 +239,13 @@ export const registerWaiting = (on: Parameters<Register>[0]) => {
   // A Monitor call starts a background watch that streams events until it ends.
   on('tool.call', { tool: 'Monitor' }, async ($, e, next) => {
     const r = await next(e)
-    const result = 'result' in r ? (r.result as { taskId?: string } | undefined) : undefined
+    const result = 'result' in r ? (r.result as { taskId?: string; timeoutMs?: number; persistent?: boolean } | undefined) : undefined
     const id = result?.taskId
     if (id) {
       const label = oneLine(e.description || e.command || e.ws?.url || id)
-      void record($, items => ({ ...items, [`task:${id}`]: { kind: 'monitor', label, detail: e.command, startedAt: Date.now() } }))
+      const startedAt = Date.now()
+      const deadline = result && !result.persistent && result.timeoutMs ? startedAt + result.timeoutMs : undefined
+      void record($, items => ({ ...items, [`task:${id}`]: { kind: 'monitor', label, detail: e.command, startedAt, deadline } }))
     }
     return r
   })

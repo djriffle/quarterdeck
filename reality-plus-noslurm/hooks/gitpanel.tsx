@@ -1,7 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
+import { onGitResume } from './gitpoll'
 import type { GitBranch, GitCommit, GitData, GitIssue, GitPR, GitStash, Issue, Snapshot, Worktree } from '../types'
+
+// Owned by gitpoll.tsx (/toggle-git); read here.
+const gitOn = atom({ plugin: 'reality-plus-noslurm', key: 'git-on' } as const, true)
 
 export const GIT_PANE = 'git'
 export const GIT_TITLE = 'Git'
@@ -74,6 +78,7 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
     const baseOf = async () => (await run(['git', 'rev-parse', '--abbrev-ref', 'origin/HEAD'])).trim().replace(/^origin\//, '')
 
     const refreshLocal = async () => {
+      if (!(await read($, gitOn))) return
       let base: string | undefined
       await section('status', async () => {
         base = await baseOf()
@@ -147,6 +152,7 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
     }
 
     const refreshRemote = async () => {
+      if (!(await read($, gitOn))) return
       await section('prs', async () => {
         const out = await run(
           ['gh', 'pr', 'list', '--state', 'open', '--limit', String(LIST_LIMIT), '--json', 'number,title,headRefName,isDraft,reviewDecision,mergeable,statusCheckRollup,closingIssuesReferences,author,url'],
@@ -188,6 +194,7 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
       remote()
     }
     refreshAll()
+    onGitResume(refreshAll)
     $.clock.every(LOCAL_EVERY_MS, local)
     $.clock.every(REMOTE_EVERY_MS, remote)
 
@@ -211,6 +218,7 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
     const { Box, Text, Link, Button } = $.ui.resolve(e)
     const view = await read($, views)
     const g = await read($, git)
+    const polling = await read($, gitOn)
     const all = await read($, showAll)
     const allPRs = await read($, showAllPRs)
     const ment = await read($, mentioned)
@@ -313,13 +321,14 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
           {g.dirty === 0 && <Text color="inactive"> clean</Text>}
           {ago !== undefined && <Text color="subtle"> · {ago}s ago</Text>}
         </Text>
-        {g.errors.status && <Text color="red" wrap="truncate-end">git: {g.errors.status}</Text>}
-        {loading && <Text dimColor>loading…</Text>}
+        {!polling && <Text color="inactive">git polling off · /toggle-git to resume</Text>}
+        {polling && g.errors.status && <Text color="red" wrap="truncate-end">git: {g.errors.status}</Text>}
+        {polling && loading && <Text dimColor>loading…</Text>}
 
         {allPRs ? (
-          <Head label="PULL REQUESTS" count={`${g.prs.length} open (all)`} err={g.errors.prs && `gh: ${g.errors.prs}`} />
+          <Head label="PULL REQUESTS" count={`${g.prs.length} open (all)`} err={polling && g.errors.prs ? `gh: ${g.errors.prs}` : undefined} />
         ) : (
-          <Head label="PULL REQUESTS" count={`${mentionedPRs.length} mentioned`} err={ment.error && `gh: ${ment.error}`} />
+          <Head label="PULL REQUESTS" count={`${mentionedPRs.length} mentioned`} err={polling && ment.error ? `gh: ${ment.error}` : undefined} />
         )}
         <Button
           key="prs-view"
@@ -356,9 +365,9 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
           })}
 
         {all ? (
-          <Head label="ISSUES" count={`${g.issues.length} open (all)`} err={g.errors.issues && `gh: ${g.errors.issues}`} />
+          <Head label="ISSUES" count={`${g.issues.length} open (all)`} err={polling && g.errors.issues ? `gh: ${g.errors.issues}` : undefined} />
         ) : (
-          <Head label="ISSUES" count={`${mentionedIssues.length} mentioned`} err={ment.error && `gh: ${ment.error}`} />
+          <Head label="ISSUES" count={`${mentionedIssues.length} mentioned`} err={polling && ment.error ? `gh: ${ment.error}` : undefined} />
         )}
         <Button
           key="issues-view"
@@ -402,7 +411,7 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
         <Head
           label="BRANCHES"
           count={`${shownBranches.length}${view.branches ? ' (all)' : ` of ${g.branches.length}`}${stale > 0 ? ` · ${stale} merged` : ''} vs ${g.base ?? '…'}`}
-          err={g.errors.branches && `git: ${g.errors.branches}`}
+          err={polling && g.errors.branches ? `git: ${g.errors.branches}` : undefined}
         />
         <Toggle k="branches" />
         {shownBranches.slice(0, SHOW.branches).map(b => {
@@ -437,7 +446,7 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
         <Head
           label="WORKTREES"
           count={`${shownTrees.length}${view.worktrees ? ' (all)' : ` of ${wts.items.length}`}`}
-          err={wts.error && `git: ${wts.error}`}
+          err={polling && wts.error ? `git: ${wts.error}` : undefined}
         />
         <Toggle k="worktrees" />
         {shownTrees.map(w => (
@@ -454,7 +463,7 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
         <Head
           label="STASHES"
           count={`${shownStashes.length}${view.stashes ? ' (all)' : ` of ${g.stashes.length}`}`}
-          err={g.errors.stashes && `git: ${g.errors.stashes}`}
+          err={polling && g.errors.stashes ? `git: ${g.errors.stashes}` : undefined}
         />
         <Toggle k="stashes" />
         {!loading && !g.errors.stashes && shownStashes.length === 0 && <Text dimColor>none{view.stashes ? '' : ' on this branch'}</Text>}
@@ -469,7 +478,7 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
         <Head
           label="COMMITS"
           count={view.commits ? 'all branches' : `${g.head ?? ''} ahead of ${g.base ?? '…'}`}
-          err={g.errors.commits && `git: ${g.errors.commits}`}
+          err={polling && g.errors.commits ? `git: ${g.errors.commits}` : undefined}
         />
         <Toggle k="commits" />
         {!view.commits && !loading && !g.errors.commits && g.commits.length === 0 && <Text dimColor>nothing ahead of {g.base}</Text>}

@@ -11,6 +11,8 @@ Install one or the other, not both: they register the same commands (`/tabs`, `/
 
 ## reality-plus
 
+![reality-plus: the wave, the /waiting box and the HUD strip above the prompt](docs/previews/hud.svg)
+
 A skin for the Claude Code terminal UI:
 
 - HUD strip above the prompt (project, session name, branch, Slurm counts, model, goal progress) with a TABS button
@@ -18,8 +20,19 @@ A skin for the Claude Code terminal UI:
 - `/wave`: a faint animated blue wave with two sloops; the lead ship carries notifications (PR checks, reviews, finished Slurm jobs)
 - `/waiting`: a green box of running subagents, background shells and Monitor watches; each spins while live and draws a check (or a red cross on failure) when it ends
 - `/holding`: a yellow HOLDING bar marking the session as an open window that needs no attention right now; `/holding` again clears it
+- `/toggle-git`: pause git and gh polling (e.g. in a folder that is not a repository, or has no GitHub remote, where every refresh would print an error); the HUD shows `⑂ git off` and the Git and Work tabs say polling is off; `/toggle-git` again resumes it
 - Folded tool rows, coloured Bash and diff cards
 - `/wrap-up` handoff and `/wind-down` resume prep
+
+### Tabs
+
+TABS (or `/tabs`) opens them all; `/work-panel`, `/git`, `/slurm`, `/files` and `/notes` open one.
+
+| Work | Git |
+| --- | --- |
+| ![Work tab: issues and PRs touched this session, running Slurm jobs, worktrees, subagents](docs/previews/tab-work.svg) | ![Git tab: PRs with checks and review state, issues, branches, worktrees, stashes, commits](docs/previews/tab-git.svg) |
+| **Slurm** | **Notes** |
+| ![Slurm tab: your jobs, running first, with elapsed time, limit and node](docs/previews/tab-slurm.svg) | ![Notes tab: per-session notes, typed in the pane or with /note](docs/previews/tab-notes.svg) |
 
 ## reality-plus-noslurm
 
@@ -31,7 +44,13 @@ A skin for the Claude Code terminal UI:
 - "job left the queue" notifications (the wave still carries PR checks and reviews)
 - the Slurm step of the `/wind-down` brief, which now asks to record any long-running jobs or processes instead
 
+![reality-plus-noslurm with /toggle-git and /holding on: HUD without Slurm, Git tab with polling off](docs/previews/noslurm-toggle-git.svg)
+
 It never calls `squeue`. Its state and notes live under its own name (`~/.claude/mods-data/reality-plus-noslurm/notes/`), separate from `reality-plus`.
+
+## Previews
+
+The images in `docs/previews/` are real captures of Claude Code running these mods (`tmux capture-pane -e`, converted to SVG with [rich](https://github.com/Textualize/rich)), on a throwaway demo repository with stand-in `squeue` and `gh` output, so the jobs, issues and PRs shown are made up.
 
 ## Theme
 

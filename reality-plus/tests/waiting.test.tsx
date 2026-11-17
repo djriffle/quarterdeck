@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
-import { CHECK, CROSS, SPIN, elapsed, endTask, foldAgents, glyph, parseNotifications, prune, reconcile, tombstone } from '../hooks/waiting'
+import { CHECK, CROSS, SPIN, elapsed, endTask, foldAgents, glyph, parseNotifications, prune, reconcile, tombstone, expire } from '../hooks/waiting'
 import type { WaitItem } from '../types'
 
 const agent = (id: string, status: AgentInfo['status']): AgentInfo => ({ id, description: `task ${id}`, type: 'Explore', status })
@@ -126,4 +126,19 @@ test('a pruned ended row is not brought back by a later Stop listing it as runni
   const out = reconcile(items, [{ id: 'm', type: 'monitor', status: 'running', description: 'watch' }], new Set(ended), 10_001, 20)
   expect(out['task:m']).toBe(undefined)
   expect(tombstone(ended, out)).toBe(ended)
+})
+
+test('a monitor past its timeout ends as expired; a persistent one or one still in time keeps spinning', () => {
+  const items = {
+    'task:old': { kind: 'monitor' as const, label: 'watch job', startedAt: 0, deadline: 300_000 },
+    'task:new': { kind: 'monitor' as const, label: 'watch job', startedAt: 290_000, deadline: 590_000 },
+    'task:forever': { kind: 'monitor' as const, label: 'tail log', startedAt: 0 },
+  }
+  const out = expire(items, 7, 300_001)
+  expect(out['task:old']?.endedPhase).toBe(7)
+  expect(out['task:old']?.status).toBe('expired')
+  expect(out['task:old']?.ok).toBe(true)
+  expect(out['task:new']?.endedPhase).toBeUndefined()
+  expect(out['task:forever']?.endedPhase).toBeUndefined()
+  expect(expire(out, 9, 300_002)['task:old']?.endedPhase).toBe(7)
 })

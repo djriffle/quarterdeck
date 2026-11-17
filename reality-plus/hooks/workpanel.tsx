@@ -3,6 +3,10 @@ import type { Register } from 'claude-code'
 
 import type { Issue, Job, Worktree } from '../types'
 import { GIT_PANE, GIT_TITLE, registerGitPanel } from './gitpanel'
+import { onGitResume } from './gitpoll'
+
+// Owned by gitpoll.tsx (/toggle-git); read here.
+const gitOn = atom({ plugin: 'reality-plus', key: 'git-on' } as const, true)
 
 const PANE = 'work-panel'
 const TITLE = 'Work'
@@ -118,6 +122,7 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
     if (seeded.length) await update($, refs, r => [...new Set([...r, ...seeded])])
 
     const refreshIssues = async () => {
+      if (!(await read($, gitOn))) return
       const nums = await read($, refs)
       if (nums.length === 0) {
         await update($, issues, () => ({ items: [], at: Date.now() }))
@@ -139,6 +144,7 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
     }
 
     const refreshWorktrees = async () => {
+      if (!(await read($, gitOn))) return
       const r = await $.process.run(['git', 'worktree', 'list', '--porcelain'], { cwd })
       if (r.exitCode !== 0) {
         await update($, worktrees, s => ({ ...s, error: oneLine(r.stderr || `git exited ${r.exitCode}`, 200), at: Date.now() }))
@@ -206,6 +212,10 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
     refreshIssuesNow = guard('issues', refreshIssues)
     refreshIssuesNow()
     guard('worktrees', refreshWorktrees)()
+    onGitResume(() => {
+      refreshIssuesNow?.()
+      guard('worktrees', refreshWorktrees)()
+    })
     $.clock.every(ISSUES_EVERY_MS, guard('issues', refreshIssues))
     $.clock.every(WORKTREES_EVERY_MS, guard('worktrees', refreshWorktrees))
     const refreshJobs = async () => {
@@ -341,6 +351,7 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
     await read($, tick)
     const iss = await read($, issues)
     const wts = await read($, worktrees)
+    const polling = await read($, gitOn)
     const act = await read($, activity)
     const agents = await $.agent.list()
     const withTree = new Set(wts.items.map(w => w.issue).filter((n): n is number => n !== undefined))
@@ -366,7 +377,7 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
         {iss.at > 0 && iss.items.length === 0 && !iss.error && (
           <Text dimColor wrap="truncate-end">none yet: mention #123 or work on one with gh</Text>
         )}
-        {iss.error && <Text color="red" wrap="truncate-end">gh: {iss.error}</Text>}
+        {polling && iss.error && <Text color="red" wrap="truncate-end">gh: {iss.error}</Text>}
         {iss.items.map(i => (
           <Box flexDirection="row">
             <Link href={i.url}>{`${i.isPR ? 'PR ' : ''}#${i.number}`}</Link>
@@ -403,7 +414,8 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
 
         <Text> </Text>
         <Head label="WORKTREES" count={`${wts.items.length} vs ${wts.base ?? '…'}`} />
-        {wts.error && <Text color="red" wrap="truncate-end">git: {wts.error}</Text>}
+        {!polling && <Text color="inactive">git polling off · /toggle-git to resume</Text>}
+        {polling && wts.error && <Text color="red" wrap="truncate-end">git: {wts.error}</Text>}
         {wts.items.map(w => {
           const wh = w.health
           const removable = !w.isMain && !w.isLocked && wh !== undefined && wh.isMerged && wh.dirty === 0

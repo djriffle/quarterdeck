@@ -121,6 +121,8 @@ export type WaitItem = {
   endedAt?: number
   endedPhase?: number
   ok?: boolean
+  // Monitor only: when its timeout runs out (ms since epoch); absent for persistent watches.
+  deadline?: number
 }
 
 declare module 'claude-code' {
@@ -141,6 +143,7 @@ declare module 'claude-code' {
       'waiting-items': Shaped<Record<string, WaitItem>>
       'waiting-ended': Shaped<string[]>
       'holding-on': boolean
+      'git-on': boolean
       'git-prs-all': boolean
       'git-views': Shaped<Record<string, boolean>>
       hud: Shaped<Hud>

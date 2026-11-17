@@ -12,6 +12,10 @@ import { registerWave, waveRows } from './wave'
 import { registerNotify } from './notify'
 import { registerWaiting, waitingBox } from './waiting'
 import { holdingBar, registerHolding } from './holding'
+import { onGitResume, registerGitPoll } from './gitpoll'
+
+// Owned by gitpoll.tsx (/toggle-git); read here.
+const gitOn = atom({ plugin: 'reality-plus-noslurm', key: 'git-on' } as const, true)
 
 // Colours are theme keys, so the skin follows ~/.claude/themes/reality-plus.json
 // (pick "Reality+" in /theme): Claude's traditional orange #D77757 as the one
@@ -64,6 +68,7 @@ export const register: Register = on => {
   registerNotify(on)
   registerWaiting(on)
   registerHolding(on)
+  registerGitPoll(on)
   let project = 'SESSION'
 
   on('session.start', async ($, e, next) => {
@@ -72,6 +77,10 @@ export const register: Register = on => {
     project = (cwd.replace(/\/+$/, '').split('/').pop() ?? 'session').toUpperCase()
 
     const refresh = async () => {
+      if (!(await read($, gitOn))) {
+        await update($, hud, h => ({ ...h, branch: 'git off' }))
+        return
+      }
       const git = await $.process.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd })
       const branch = git.exitCode === 0 ? git.stdout.trim() : 'no-git'
       await update($, hud, () => ({ branch }))
@@ -80,6 +89,7 @@ export const register: Register = on => {
       refresh().catch(err => $.ui.log(`reality-plus HUD refresh failed: ${String(err)}`))
     }
     run()
+    onGitResume(run)
     $.clock.every(HUD_EVERY_MS, run)
 
     // Session name. Current Claude Code keeps the /rename title in a sidecar file,
