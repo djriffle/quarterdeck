@@ -12,6 +12,7 @@ import { registerWave, waveRows } from './wave'
 import { registerNotify } from './notify'
 import { registerWaiting, waitingBox } from './waiting'
 import { holdingBar, registerHolding } from './holding'
+import { labelBar, registerLabel } from './label'
 import { onGitResume, registerGitPoll } from './gitpoll'
 
 // Owned by gitpoll.tsx (/toggle-git); read here.
@@ -68,6 +69,7 @@ export const register: Register = on => {
   registerNotify(on)
   registerWaiting(on)
   registerHolding(on)
+  registerLabel(on)
   registerGitPoll(on)
   let project = 'SESSION'
 
@@ -285,10 +287,12 @@ export const register: Register = on => {
         )) : []
     const waitBox = await waitingBox($, e, room)
     const holdBar = await holdingBar($, e, room)
-    if (!showGoal && !waving && !waitBox && !holdBar) return strip
+    const tagBar = await labelBar($, e, room)
+    if (!showGoal && !waving && !waitBox && !holdBar && !tagBar) return strip
     return (
       <Box flexDirection="column">
         {holdBar}
+        {tagBar}
         {wave}
         {waitBox}
         {strip}

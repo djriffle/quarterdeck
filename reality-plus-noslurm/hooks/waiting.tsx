@@ -55,8 +55,11 @@ export const foldAgents = (items: Record<string, WaitItem>, agents: AgentInfo[],
     if (ACTIVE.has(a.status)) {
       if (!old || old.endedPhase !== undefined)
         next[key] = { kind: 'agent', label: oneLine(a.description || a.name || a.type), detail: a.type, startedAt: old?.startedAt ?? now }
-    } else if (old && old.endedPhase === undefined) {
-      next[key] = { ...old, endedPhase: phase, endedAt: now, ok: a.status === 'completed' }
+    } else {
+      if (old && old.endedPhase === undefined) next[key] = { ...old, endedPhase: phase, endedAt: now, ok: a.status === 'completed' }
+      // A shell the engine ends at its subagent's final response sends no notification: it ends with the agent.
+      for (const [k, v] of Object.entries(next))
+        if (v.owner === a.id && v.endedPhase === undefined) next[k] = { ...v, endedPhase: phase, endedAt: now, ok: true, status: 'stopped' }
     }
   }
   return next
@@ -116,14 +119,17 @@ export const prune = (items: Record<string, WaitItem>, phase: number) => {
   return out
 }
 
-// Each task notification carries its id, and its final status once the task has ended. A Monitor's
-// streamed events carry no status: those are not an end. One delivery can hold several notifications.
+// Each task notification carries its id(s), and its final status once the task has ended. A Monitor's
+// streamed events carry no status: those are not an end. One delivery can hold several notifications,
+// and one notification can name several tasks (the engine's "N background shell command tasks didn't
+// finish before the previous session ended" notice lists every id, plus an `__orphan_summary__:` marker).
 export const parseNotifications = (text: string) => {
   const out: { id: string; status: string }[] = []
   for (const [block] of text.matchAll(/<task-notification>[\s\S]*?<\/task-notification>/g)) {
-    const id = block.match(/<task-id>\s*([^<\s]+)\s*<\/task-id>/)?.[1]
     const status = block.match(/<status>\s*([^<\s]+)\s*<\/status>/)?.[1]
-    if (id && status) out.push({ id, status })
+    if (!status) continue
+    for (const m of block.matchAll(/<task-id>\s*([^<\s]+)\s*<\/task-id>/g))
+      if (!m[1].startsWith('__orphan_summary__')) out.push({ id: m[1], status })
   }
   return out
 }
@@ -227,11 +233,13 @@ export const registerWaiting = (on: Parameters<Register>[0]) => {
   // A Bash call sent to the background (asked for, ctrl+b, or timed out) is a waiting shell.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const r = await next(e)
-    const result = 'result' in r ? (r.result as { backgroundTaskId?: string } | undefined) : undefined
+    const result = 'result' in r ? (r.result as { backgroundTaskId?: string; backgroundEndsWithFinalResponse?: true } | undefined) : undefined
     const id = result?.backgroundTaskId
     if (id) {
       const label = oneLine((e as { description?: string }).description || e.command)
-      void record($, items => ({ ...items, [`task:${id}`]: { kind: 'shell', label, detail: e.command, startedAt: Date.now() } }))
+      // Killed at its subagent's final response with no notification: tie the row to that agent.
+      const owner = result?.backgroundEndsWithFinalResponse ? e.agentId : undefined
+      void record($, items => ({ ...items, [`task:${id}`]: { kind: 'shell', label, detail: e.command, startedAt: Date.now(), owner } }))
     }
     return r
   })

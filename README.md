@@ -20,6 +20,7 @@ A skin for the Claude Code terminal UI:
 - `/wave`: a faint animated blue wave with two sloops; the lead ship carries notifications (PR checks, reviews, finished Slurm jobs)
 - `/waiting`: a green box of running subagents, background shells and Monitor watches; each spins while live and draws a check (or a red cross on failure) when it ends
 - `/holding`: a yellow HOLDING bar marking the session as an open window that needs no attention right now; `/holding` again clears it
+- `/label <text>`: an orange bar with your text above the prompt; `/label` alone clears it
 - `/toggle-git`: pause git and gh polling (e.g. in a folder that is not a repository, or has no GitHub remote, where every refresh would print an error); the HUD shows `⑂ git off` and the Git and Work tabs say polling is off; `/toggle-git` again resumes it
 - Folded tool rows, coloured Bash and diff cards
 - `/wrap-up` handoff and `/wind-down` resume prep

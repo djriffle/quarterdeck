@@ -142,3 +142,22 @@ test('a monitor past its timeout ends as expired; a persistent one or one still 
   expect(out['task:forever']?.endedPhase).toBeUndefined()
   expect(expire(out, 9, 300_002)['task:old']?.endedPhase).toBe(7)
 })
+
+test('a notification naming several tasks ends every one of them (orphan summary)', () => {
+  const orphan = '<task-notification>\n<task-id>bfh57ppwq</task-id>\n<task-id>be9e00vjs</task-id>\n<task-id>__orphan_summary__:shell</task-id>\n<status>stopped</status>\n<summary>2 background shell command tasks didn\'t finish</summary>\n</task-notification>'
+  expect(parseNotifications(orphan)).toEqual([
+    { id: 'bfh57ppwq', status: 'stopped' },
+    { id: 'be9e00vjs', status: 'stopped' },
+  ])
+})
+
+test('a shell that ends with its subagent ends when that agent does', () => {
+  let items: Record<string, WaitItem> = foldAgents({}, [agent('sub', 'running')], 0, 0)
+  items = { ...items, 'task:sh9': { kind: 'shell', label: 'sleep', startedAt: 0, owner: 'sub' }, 'task:sh8': { kind: 'shell', label: 'other', startedAt: 0 } }
+  items = foldAgents(items, [agent('sub', 'running')], 2, 0)
+  expect(items['task:sh9'].endedPhase).toBe(undefined)
+  items = foldAgents(items, [agent('sub', 'completed')], 5, 0)
+  expect(items['task:sh9'].endedPhase).toBe(5)
+  expect(items['task:sh9'].status).toBe('stopped')
+  expect(items['task:sh8'].endedPhase).toBe(undefined)
+})
