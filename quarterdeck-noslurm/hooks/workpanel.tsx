@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Issue, Worktree } from '../types'
+import type { Issue, Snapshot, Worktree } from '../types'
 import { GIT_PANE, GIT_TITLE, registerGitPanel } from './gitpanel'
 import { onGitResume } from './gitpoll'
+import { sharedKey, sharedPoll } from './sharedpoll'
 
 // Owned by gitpoll.tsx (/toggle-git); read here.
 const gitOn = atom({ plugin: 'quarterdeck-noslurm', key: 'git-on' } as const, true)
@@ -14,7 +15,9 @@ const PANE_BG = 'rgb(20,20,20)'
 // Issues and PRs this session touched: numbers you typed (#385, "issue 385") and
 // numbers Claude's gh commands acted on. Details refreshed from GitHub.
 const ISSUES_EVERY_MS = 300_000
-const WORKTREES_EVERY_MS = 30_000
+const WORKTREES_EVERY_MS = 30_000 // shared per repository (sharedpoll.ts); each session reads it every 5 s
+const WORKTREES_READ_EVERY_MS = 5_000
+const WORKTREES_LOCK_STALE_MS = 180_000
 const AGENTS_EVERY_MS = 5_000
 const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting', 'idle'])
 
@@ -138,13 +141,10 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
       await update($, issues, () => ({ items, at: Date.now(), error: errors.length ? errors.join('; ') : undefined }))
     }
 
-    const refreshWorktrees = async () => {
-      if (!(await read($, gitOn))) return
+    // The snapshot the whole repository shares: errors are part of it, so every session draws them.
+    const computeWorktrees = async (prev: Snapshot<Worktree> | undefined): Promise<Snapshot<Worktree>> => {
       const r = await $.process.run(['git', 'worktree', 'list', '--porcelain'], { cwd })
-      if (r.exitCode !== 0) {
-        await update($, worktrees, s => ({ ...s, error: oneLine(r.stderr || `git exited ${r.exitCode}`, 200), at: Date.now() }))
-        return
-      }
+      if (r.exitCode !== 0) return { items: prev?.items ?? [], base: prev?.base, error: oneLine(r.stderr || `git exited ${r.exitCode}`, 200), at: Date.now() }
       const listed: Worktree[] = r.stdout
         .split(/\n\n+/)
         .filter(b => b.startsWith('worktree '))
@@ -166,10 +166,7 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
 
       // The base every worktree is measured against: the remote's default branch, as a local branch.
       const originHead = await $.process.run(['git', 'rev-parse', '--abbrev-ref', 'origin/HEAD'], { cwd })
-      if (originHead.exitCode !== 0) {
-        await update($, worktrees, () => ({ items: listed, at: Date.now(), error: `no default branch: ${oneLine(originHead.stderr, 120)}` }))
-        return
-      }
+      if (originHead.exitCode !== 0) return { items: listed, at: Date.now(), error: `no default branch: ${oneLine(originHead.stderr, 120)}` }
       const base = originHead.stdout.trim().replace(/^origin\//, '')
 
       const git = (path: string, args: string[]) => $.process.run(['git', '-C', path, ...args], { timeoutMs: 20_000 })
@@ -197,7 +194,23 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
           }
         }),
       )
-      await update($, worktrees, () => ({ items, at: Date.now(), base }))
+      return { items, at: Date.now(), base }
+    }
+    // Every worktree of one repository shares one poll; outside a repository it is keyed by the folder.
+    const common = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd })
+    const worktreesPoll = {
+      key: sharedKey('worktrees', common.exitCode === 0 ? common.stdout.trim() : cwd),
+      everyMs: WORKTREES_EVERY_MS,
+      lockStaleMs: WORKTREES_LOCK_STALE_MS,
+      compute: computeWorktrees,
+    }
+    const refreshWorktrees = async (force = false) => {
+      if (!(await read($, gitOn))) return
+      const shared = await sharedPoll($, worktreesPoll, force)
+      if (shared?.value) {
+        const snap = shared.value
+        await update($, worktrees, () => snap)
+      }
     }
 
     // Errors from the refreshes land in the pane; anything else is logged loudly.
@@ -206,13 +219,13 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
     }
     refreshIssuesNow = guard('issues', refreshIssues)
     refreshIssuesNow()
-    guard('worktrees', refreshWorktrees)()
+    guard('worktrees', () => refreshWorktrees())()
     onGitResume(() => {
       refreshIssuesNow?.()
-      guard('worktrees', refreshWorktrees)()
+      guard('worktrees', () => refreshWorktrees(true))()
     })
     $.clock.every(ISSUES_EVERY_MS, guard('issues', refreshIssues))
-    $.clock.every(WORKTREES_EVERY_MS, guard('worktrees', refreshWorktrees))
+    $.clock.every(WORKTREES_READ_EVERY_MS, guard('worktrees', () => refreshWorktrees()))
     $.clock.every(AGENTS_EVERY_MS, () => {
       void update($, tick, n => n + 1)
     })

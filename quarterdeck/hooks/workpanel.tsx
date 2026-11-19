@@ -1,10 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Issue, Job, Worktree } from '../types'
+import type { Issue, Job, Snapshot, Worktree } from '../types'
 import { GIT_PANE, GIT_TITLE, registerGitPanel } from './gitpanel'
 import { onGitResume } from './gitpoll'
 import { onSlurmResume } from './slurmpoll'
+import { type Shared, sharedKey, sharedPoll } from './sharedpoll'
 
 // Owned by gitpoll.tsx (/toggle-git); read here.
 const gitOn = atom({ plugin: 'quarterdeck', key: 'git-on' } as const, true)
@@ -22,18 +23,42 @@ const SQUEUE_TIMEOUT_MS = 20_000
 const SLURM_FAILS_BEFORE_BACKOFF = 2
 const SLURM_BACKOFF_MS = 300_000
 
-// Whether a 20 s beat should call squeue, given the failures in a row and when the last call started.
-export const shouldPollSlurm = (failures: number, lastAt: number, now: number) =>
-  failures < SLURM_FAILS_BEFORE_BACKOFF || now - lastAt >= SLURM_BACKOFF_MS
+// Every session reads one shared squeue result (sharedpoll.ts); one session calls squeue when it is
+// SLURM_EVERY_MS old, or SLURM_BACKOFF_MS while failing. The lock is cleared after this long.
+const SLURM_READ_EVERY_MS = 5_000
+const SLURM_LOCK_STALE_MS = SQUEUE_TIMEOUT_MS + 40_000
+
+export const parseSqueue = (stdout: string): Job[] =>
+  stdout
+    .split('\n')
+    .filter(Boolean)
+    .map(line => {
+      const f = line.split('|')
+      // The name is the one field that may itself hold a '|'.
+      const tail = f.slice(-5)
+      return { id: f[0], name: f.slice(1, f.length - 5).join('|'), state: tail[0], elapsed: tail[1], limit: tail[2], where: tail[3], partition: tail[4] } as Job
+    })
+
+export const squeueSnapshot = (s: Shared<Job[]>) => ({
+  items: s.value ?? [],
+  at: s.lastAt,
+  error: s.error
+    ? s.failures >= SLURM_FAILS_BEFORE_BACKOFF
+      ? `${s.error} · ${s.failures} failures in a row, retrying every ${SLURM_BACKOFF_MS / 60_000} min`
+      : s.error
+    : undefined,
+})
 
 // What a rejected squeue call shows: a timeout reads as one.
 export const squeueError = (err: unknown) =>
-  /still running after/.test(String(err)) ? `squeue timed out after ${SQUEUE_TIMEOUT_MS / 1000}s` : String(err)
+  /still running after/.test(String(err)) ? `squeue timed out after ${SQUEUE_TIMEOUT_MS / 1000}s` : err instanceof Error ? err.message : String(err)
 const PANE_BG = 'rgb(20,20,20)'
 // Issues and PRs this session touched: numbers you typed (#385, "issue 385") and
 // numbers Claude's gh commands acted on. Details refreshed from GitHub.
 const ISSUES_EVERY_MS = 300_000
-const WORKTREES_EVERY_MS = 30_000
+const WORKTREES_EVERY_MS = 30_000 // shared per repository (sharedpoll.ts); each session reads it every 5 s
+const WORKTREES_READ_EVERY_MS = 5_000
+const WORKTREES_LOCK_STALE_MS = 180_000
 const AGENTS_EVERY_MS = 5_000
 const ACTIVE_AGENT = new Set(['pending', 'running', 'waiting', 'idle'])
 
@@ -159,13 +184,10 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
       await update($, issues, () => ({ items, at: Date.now(), error: errors.length ? errors.join('; ') : undefined }))
     }
 
-    const refreshWorktrees = async () => {
-      if (!(await read($, gitOn))) return
+    // The snapshot the whole repository shares: errors are part of it, so every session draws them.
+    const computeWorktrees = async (prev: Snapshot<Worktree> | undefined): Promise<Snapshot<Worktree>> => {
       const r = await $.process.run(['git', 'worktree', 'list', '--porcelain'], { cwd })
-      if (r.exitCode !== 0) {
-        await update($, worktrees, s => ({ ...s, error: oneLine(r.stderr || `git exited ${r.exitCode}`, 200), at: Date.now() }))
-        return
-      }
+      if (r.exitCode !== 0) return { items: prev?.items ?? [], base: prev?.base, error: oneLine(r.stderr || `git exited ${r.exitCode}`, 200), at: Date.now() }
       const listed: Worktree[] = r.stdout
         .split(/\n\n+/)
         .filter(b => b.startsWith('worktree '))
@@ -187,10 +209,7 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
 
       // The base every worktree is measured against: the remote's default branch, as a local branch.
       const originHead = await $.process.run(['git', 'rev-parse', '--abbrev-ref', 'origin/HEAD'], { cwd })
-      if (originHead.exitCode !== 0) {
-        await update($, worktrees, () => ({ items: listed, at: Date.now(), error: `no default branch: ${oneLine(originHead.stderr, 120)}` }))
-        return
-      }
+      if (originHead.exitCode !== 0) return { items: listed, at: Date.now(), error: `no default branch: ${oneLine(originHead.stderr, 120)}` }
       const base = originHead.stdout.trim().replace(/^origin\//, '')
 
       const git = (path: string, args: string[]) => $.process.run(['git', '-C', path, ...args], { timeoutMs: 20_000 })
@@ -218,7 +237,23 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
           }
         }),
       )
-      await update($, worktrees, () => ({ items, at: Date.now(), base }))
+      return { items, at: Date.now(), base }
+    }
+    // Every worktree of one repository shares one poll; outside a repository it is keyed by the folder.
+    const common = await $.process.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd })
+    const worktreesPoll = {
+      key: sharedKey('worktrees', common.exitCode === 0 ? common.stdout.trim() : cwd),
+      everyMs: WORKTREES_EVERY_MS,
+      lockStaleMs: WORKTREES_LOCK_STALE_MS,
+      compute: computeWorktrees,
+    }
+    const refreshWorktrees = async (force = false) => {
+      if (!(await read($, gitOn))) return
+      const shared = await sharedPoll($, worktreesPoll, force)
+      if (shared?.value) {
+        const snap = shared.value
+        await update($, worktrees, () => snap)
+      }
     }
 
     // Errors from the refreshes land in the pane; anything else is logged loudly.
@@ -227,62 +262,36 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
     }
     refreshIssuesNow = guard('issues', refreshIssues)
     refreshIssuesNow()
-    guard('worktrees', refreshWorktrees)()
+    guard('worktrees', () => refreshWorktrees())()
     onGitResume(() => {
       refreshIssuesNow?.()
-      guard('worktrees', refreshWorktrees)()
+      guard('worktrees', () => refreshWorktrees(true))()
     })
     $.clock.every(ISSUES_EVERY_MS, guard('issues', refreshIssues))
-    $.clock.every(WORKTREES_EVERY_MS, guard('worktrees', refreshWorktrees))
-    // One squeue at a time: a beat that lands while the last call still runs is skipped, so a slow
-    // controller is not handed a pile of queued calls. A call that fails or times out is drawn as the
-    // snapshot's error (HUD, Slurm and Work tabs), with the last jobs kept, rather than logged each beat.
-    // Two failures in a row (timeout or error) slow polling to every 5 minutes; a success restores 20 s.
-    let squeueRunning = false
-    let squeueFailures = 0
-    let squeueLastAt = 0
-    const failJobs = async (msg: string) => {
-      squeueFailures++
-      const slowed = squeueFailures >= SLURM_FAILS_BEFORE_BACKOFF ? ` · ${squeueFailures} failures in a row, retrying every ${SLURM_BACKOFF_MS / 60_000} min` : ''
-      await update($, jobs, s => ({ ...s, error: oneLine(msg, 200) + slowed, at: Date.now() }))
+    $.clock.every(WORKTREES_READ_EVERY_MS, guard('worktrees', () => refreshWorktrees()))
+    // One squeue for all sessions; a failure or timeout is drawn as the snapshot's error, not logged.
+    const squeuePoll = {
+      key: 'squeue',
+      everyMs: SLURM_EVERY_MS,
+      backoffMs: SLURM_BACKOFF_MS,
+      failsBeforeBackoff: SLURM_FAILS_BEFORE_BACKOFF,
+      lockStaleMs: SLURM_LOCK_STALE_MS,
+      errorText: squeueError,
+      compute: async () => {
+        const r = await $.process.run(['squeue', '--me', '-h', '-o', '%i|%j|%t|%M|%l|%R|%P'], { timeoutMs: SQUEUE_TIMEOUT_MS })
+        if (r.exitCode !== 0) throw new Error(oneLine(r.stderr || `squeue exited ${r.exitCode}`, 200))
+        return parseSqueue(r.stdout)
+      },
     }
-    const refreshJobs = async () => {
-      if (squeueRunning || !(await read($, slurmOn))) return
-      if (!shouldPollSlurm(squeueFailures, squeueLastAt, Date.now())) return
-      squeueRunning = true
-      squeueLastAt = Date.now()
-      let r
-      try {
-        r = await $.process.run(['squeue', '--me', '-h', '-o', '%i|%j|%t|%M|%l|%R|%P'], { timeoutMs: SQUEUE_TIMEOUT_MS })
-      } catch (err) {
-        await failJobs(squeueError(err))
-        return
-      } finally {
-        squeueRunning = false
-      }
-      if (r.exitCode !== 0) {
-        await failJobs(r.stderr || `squeue exited ${r.exitCode}`)
-        return
-      }
-      squeueFailures = 0
-      const items: Job[] = r.stdout
-        .split('\n')
-        .filter(Boolean)
-        .map(line => {
-          const f = line.split('|')
-          // The name is the one field that may itself hold a '|'.
-          const tail = f.slice(-5)
-          return { id: f[0], name: f.slice(1, f.length - 5).join('|'), state: tail[0], elapsed: tail[1], limit: tail[2], where: tail[3], partition: tail[4] }
-        })
-      await update($, jobs, () => ({ items, at: Date.now() }))
+    const refreshJobs = async (force = false) => {
+      if (!(await read($, slurmOn))) return
+      const result = await sharedPoll($, squeuePoll, force)
+      if (result) await update($, jobs, () => squeueSnapshot(result))
     }
-    guard('slurm', refreshJobs)()
-    // Turning polling back on by hand tries at once, whatever the backoff.
-    onSlurmResume(() => {
-      squeueFailures = 0
-      guard('slurm', refreshJobs)()
-    })
-    $.clock.every(SLURM_EVERY_MS, guard('slurm', refreshJobs))
+    guard('slurm', () => refreshJobs())()
+    // Turning polling back on by hand calls squeue at once, whatever the shared backoff.
+    onSlurmResume(guard('slurm', () => refreshJobs(true)))
+    $.clock.every(SLURM_READ_EVERY_MS, guard('slurm', () => refreshJobs()))
     $.clock.every(AGENTS_EVERY_MS, () => {
       void update($, tick, n => n + 1)
     })

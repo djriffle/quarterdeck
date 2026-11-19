@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { fakeHost, withSharedFs } from './fakehost'
 
 const SLURM = {
   plugin: 'quarterdeck',
@@ -18,10 +19,11 @@ test('the Slurm tab groups jobs by experiment', async ($, on) => {
   on('command.register', () => ({ value: { command: 'x' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.messages', () => ({ value: [] }))
-  on('process.run', (_, e) => ({
-    value: { exitCode: 0, stdout: e.argv[0] === 'squeue' ? QUEUE : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
+  on('agent.list', () => ({ value: [] }))
+  on('ui.log', () => ({ value: undefined }))
+  fakeHost(on, () => ({ exitCode: 0, stdout: QUEUE, stderr: '' }))
   await $.session.start({ cwd: '/x', surface: 'terminal', isInteractive: true })
+  await new Promise(r => setTimeout(r, 50))
   const ui = await $.ui.mount({ ...SLURM, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /exp 56e9b7322acc/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /g_kusama_scrambled/ })).toBeTruthy()
@@ -44,10 +46,9 @@ test('the Work tab previews Slurm ', async ($, on) => {
   })
   on('session.messages', () => ({ value: [] }))
   on('agent.list', () => ({ value: [] }))
-  on('process.run', (_, e) => ({
-    value: { exitCode: 0, stdout: e.argv[0] === 'squeue' ? QUEUE : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
+  fakeHost(on, () => ({ exitCode: 0, stdout: QUEUE, stderr: '' }))
   await $.session.start({ cwd: '/x', surface: 'terminal', isInteractive: true })
+  await new Promise(r => setTimeout(r, 50))
   const ui = await $.ui.mount({ ...SLURM, requestId: 'work-panel', props: { ...SLURM.props, title: 'Work' }, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /space_metrics/ })).toBeTruthy()
   await ui.unmount()
@@ -62,7 +63,7 @@ test('worktree rows draw their health line', async ($, on) => {
   const ok = (stdout: string, exitCode = 0) => ({
     value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   })
-  on('process.run', (_, e) => {
+  withSharedFs(on, (_, e) => {
     const a = e.argv.join(' ')
     if (a.startsWith('git worktree list')) return ok('worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /repo-12\nHEAD def1234\nbranch refs/heads/feat-12-x\n')
     if (a.includes('origin/HEAD')) return ok('origin/main\n')

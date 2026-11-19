@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { withSharedFs } from './fakehost'
 
 const PANE = (requestId: string, title: string) =>
   ({
@@ -16,7 +17,7 @@ test('/toggle-git stops git and gh polling, hides their errors, and resumes', as
   on('ui.log', () => ({ value: undefined }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'look at #12', toolUses: [] }] }))
   on('agent.list', () => ({ value: [] }))
-  on('process.run', (_, e) => {
+  withSharedFs(on, (_, e) => {
     calls.push(e.argv[0])
     const isRepoTool = e.argv[0] === 'git' || e.argv[0] === 'gh'
     return {
