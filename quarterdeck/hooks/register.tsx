@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Goal, Hud, Notice, TaskItem } from '../types'
+import type { Goal, Hud, Job, Notice, Snapshot, TaskItem } from '../types'
 import { registerTranscript } from './transcript'
 import { registerWrapUp } from './wrapup'
 import { registerFileTree } from './filetree'
@@ -20,6 +20,8 @@ import { onSlurmResume, registerSlurmPoll } from './slurmpoll'
 const gitOn = atom({ plugin: 'quarterdeck', key: 'git-on' } as const, true)
 // Owned by slurmpoll.tsx (/toggle-slurm); read here.
 const slurmOn = atom({ plugin: 'quarterdeck', key: 'slurm-on' } as const, true)
+// Owned by workpanel.tsx, the one squeue poller; the HUD counts come from it.
+const jobs = atom({ plugin: 'quarterdeck', key: 'wp-jobs' } as const, { items: [], at: 0 } as Snapshot<Job>, { shape: 'jobs-1' })
 
 // Colours are theme keys, so the skin follows ~/.claude/themes/quarterdeck.json
 // (pick "Quarterdeck" in /theme): Claude's traditional orange #D77757 as the one
@@ -82,35 +84,20 @@ export const register: Register = on => {
     const cwd = e.cwd
     project = (cwd.replace(/\/+$/, '').split('/').pop() ?? 'session').toUpperCase()
 
-    // Git and Slurm are polled apart, so either can be switched off (/toggle-git, /toggle-slurm).
+    // The branch only: the Slurm counts are read from the Work panel's squeue snapshot as the HUD draws.
     const refresh = async () => {
       let branch = 'git off'
       if (await read($, gitOn)) {
         const git = await $.process.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd })
         branch = git.exitCode === 0 ? git.stdout.trim() : 'no-git'
       }
-      if (!(await read($, slurmOn))) {
-        await update($, hud, () => ({ branch, running: 0, pending: 0, isSlurmOff: true }))
-        return
-      }
-      const sq = await $.process.run(['squeue', '--me', '-h', '-o', '%t'], { timeoutMs: 20_000 })
-      if (sq.exitCode !== 0) {
-        await update($, hud, () => ({ branch, running: 0, pending: 0, slurmError: sq.stderr.trim().slice(0, 60) || `exit ${sq.exitCode}` }))
-        return
-      }
-      const states = sq.stdout.split('\n').map(s => s.trim()).filter(Boolean)
-      await update($, hud, () => ({
-        branch,
-        running: states.filter(s => s === 'R').length,
-        pending: states.filter(s => s === 'PD').length,
-      }))
+      await update($, hud, h => ({ ...h, branch }))
     }
     const run = () => {
       refresh().catch(err => $.ui.log(`quarterdeck HUD refresh failed: ${String(err)}`))
     }
     run()
     onGitResume(run)
-    onSlurmResume(run)
     $.clock.every(HUD_EVERY_MS, run)
 
     // Session name. Current Claude Code keeps the /rename title in a sidecar file,
@@ -230,6 +217,8 @@ export const register: Register = on => {
     if (e.props.hasSurvey) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const hudState = await read($, hud)
+    const slurmPolling = await read($, slurmOn)
+    const queue = await read($, jobs)
     const model = await read($, modelName)
     const g = await read($, goal)
     const waving = await read($, waveOn)
@@ -258,15 +247,15 @@ export const register: Register = on => {
         {sep}
         <Text color={SIGNAL}>⑂ {hudState.branch}</Text>
         {sep}
-        {hudState.isSlurmOff ? (
+        {!slurmPolling ? (
           <Text color={DIM}>SLURM off</Text>
-        ) : hudState.slurmError ? (
-          <Text color="error">SLURM ✗ {hudState.slurmError}</Text>
+        ) : queue.error ? (
+          <Text color="error">SLURM ✗ {clip(queue.error, 40)}</Text>
         ) : (
           <Text>
             <Text color={DIM}>SLURM </Text>
-            <Text color={SIGNAL}>▶{hudState.running}</Text>
-            <Text color={DIM}> ⏸{hudState.pending}</Text>
+            <Text color={SIGNAL}>▶{queue.items.filter(j => j.state === 'R').length}</Text>
+            <Text color={DIM}> ⏸{queue.items.filter(j => j.state === 'PD').length}</Text>
           </Text>
         )}
         {model && (
