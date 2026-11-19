@@ -5,12 +5,12 @@
   },
   "plugins": [
     {
-      "name": "reality-plus",
-      "source": "./reality-plus"
+      "name": "quarterdeck",
+      "source": "./quarterdeck"
     },
     {
-      "name": "reality-plus-noslurm",
-      "source": "./reality-plus-noslurm"
+      "name": "quarterdeck-noslurm",
+      "source": "./quarterdeck-noslurm"
     }
   ]
 }
