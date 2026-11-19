@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { withSharedFs } from './fakehost'
 
 const PANE = {
   plugin: 'quarterdeck-noslurm',
@@ -16,7 +17,7 @@ test('worktree rows draw their health line', async ($, on) => {
   const ok = (stdout: string, exitCode = 0) => ({
     value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   })
-  on('process.run', (_, e) => {
+  withSharedFs(on, (_, e) => {
     const a = e.argv.join(' ')
     if (a.startsWith('git worktree list')) return ok('worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /repo-12\nHEAD def1234\nbranch refs/heads/feat-12-x\n')
     if (a.includes('origin/HEAD')) return ok('origin/main\n')

@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { fakeHost } from './fakehost'
 
 const PANE = (requestId: string, title: string) =>
   ({
@@ -8,27 +9,15 @@ const PANE = (requestId: string, title: string) =>
     props: { title, isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
   }) as const
 
+
 test('/toggle-slurm stops squeue polling, hides old jobs and errors, and resumes', async ($, on) => {
-  const calls: string[] = []
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'x' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.log', () => ({ value: undefined }))
   on('session.messages', () => ({ value: [] }))
   on('agent.list', () => ({ value: [] }))
-  on('process.run', (_, e) => {
-    calls.push(e.argv[0])
-    const isSqueue = e.argv[0] === 'squeue'
-    return {
-      value: {
-        exitCode: 0,
-        stdout: isSqueue ? (e.argv.includes('%t') ? 'R\n' : '123|train|R|1:00|2:00|node1|gpu\n') : '',
-        stderr: '',
-        isStdoutTruncated: false,
-        isStderrTruncated: false,
-      },
-    }
-  })
+  const { calls } = fakeHost(on, () => ({ exitCode: 0, stdout: '123|train|R|1:00|2:00|node1|gpu\n', stderr: '' }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await new Promise(r => setTimeout(r, 50))
 
@@ -53,47 +42,91 @@ test('/toggle-slurm stops squeue polling, hides old jobs and errors, and resumes
   expect(calls.filter(c => c === 'squeue').length).toBeGreaterThan(0)
 })
 
-import { shouldPollSlurm, squeueError } from '../hooks/workpanel'
+import { squeueError, squeueSnapshot } from '../hooks/workpanel'
+import { failed, isDue, sharedKey } from '../hooks/sharedpoll'
 
-test('squeue polls every beat until two failures in a row, then every 5 minutes', () => {
-  expect(shouldPollSlurm(0, 0, 20_000)).toBe(true)
-  expect(shouldPollSlurm(1, 0, 20_000)).toBe(true)
-  expect(shouldPollSlurm(2, 0, 20_000)).toBe(false)
-  expect(shouldPollSlurm(2, 0, 299_000)).toBe(false)
-  expect(shouldPollSlurm(2, 0, 300_000)).toBe(true)
-  expect(shouldPollSlurm(5, 1_000_000, 1_100_000)).toBe(false)
+test('a shared poll is due every 20 s, every 5 minutes after two failures in a row, and at 20 s again after a success', () => {
+  const due = (s: Parameters<typeof isDue>[0], now: number) => isDue(s, now, 20_000, 300_000, 2)
+  expect(due(undefined, 0)).toBe(true)
+  const ok = { lastAt: 0, failures: 0, value: [] }
+  expect(due(ok, 19_000)).toBe(false)
+  expect(due(ok, 20_000)).toBe(true)
+  const once = failed(ok, 0, 'timed out')
+  expect(due(once, 20_000)).toBe(true)
+  const twice = failed(once, 0, 'timed out')
+  expect(due(twice, 20_000)).toBe(false)
+  expect(due(twice, 300_000)).toBe(true)
+  expect(squeueSnapshot(twice).error).toMatch(/2 failures in a row, retrying every 5 min/)
+  expect(squeueSnapshot(once).error).toBe('timed out')
+})
+
+test('a failed poll keeps the last value known', () => {
+  const job = { id: '1', name: 'x', state: 'R', elapsed: '', limit: '', where: '', partition: '' }
+  expect(failed({ lastAt: 0, failures: 0, value: [job] }, 5, 'e').value).toEqual([job])
+})
+
+test('shared keys are file-safe, readable and distinct per path', () => {
+  const a = sharedKey('git', '/data1/x/CARIBOU')
+  expect(a).toMatch(/^git-x_CARIBOU-[0-9a-z]+$/)
+  expect(sharedKey('git', '/data2/x/CARIBOU')).not.toBe(a)
 })
 
 test('a squeue timeout reads as one', () => {
   expect(squeueError(new Error('quarterdeck: $.process.run(squeue) aborted: still running after 20000ms'))).toBe('squeue timed out after 20s')
-  expect(squeueError(new Error('boom'))).toBe('Error: boom')
+  expect(squeueError(new Error('boom'))).toBe('boom')
 })
 
-test('a failing squeue shows in the Slurm tab, is not logged, and the HUD runs no squeue of its own', async ($, on) => {
-  let squeueCalls = 0
-  const logs: string[] = []
+const setup = (on: Parameters<Parameters<typeof test>[1]>[1]) => {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'x' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.messages', () => ({ value: [] }))
+  on('agent.list', () => ({ value: [] }))
+}
+
+test('a failing squeue shows in the Slurm tab and is written for every session, not logged', async ($, on) => {
+  const logs: string[] = []
+  setup(on)
   on('ui.log', (_, e) => {
     logs.push(JSON.stringify(e))
     return { value: undefined }
   })
-  on('session.messages', () => ({ value: [] }))
-  on('agent.list', () => ({ value: [] }))
-  on('process.run', (_, e) => {
-    if (e.argv[0] === 'squeue') {
-      squeueCalls++
-      return { value: { exitCode: 1, stdout: '', stderr: 'slurm_load_jobs error: Socket timed out', isStdoutTruncated: false, isStderrTruncated: false } }
-    }
-    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
+  const host = fakeHost(on, () => ({ exitCode: 1, stdout: '', stderr: 'slurm_load_jobs error: Socket timed out' }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await new Promise(r => setTimeout(r, 50))
 
   const pane = await $.ui.mount({ ...PANE('slurm', 'Slurm'), surface: 'terminal' })
   expect(await pane.find({ type: 'Text', text: /Socket timed out/ })).toBeTruthy()
   await pane.unmount()
-  expect(squeueCalls).toBe(1)
+  expect(host.calls.filter(c => c === 'squeue')).toHaveLength(1)
+  const shared = JSON.parse(host.files.get('/h/.claude/mods-data/quarterdeck/shared/squeue.json') ?? '{}')
+  expect(shared.failures).toBe(1)
+  expect(host.dirs.has('/h/.claude/mods-data/quarterdeck/shared/squeue.lock')).toBe(false)
   expect(logs.filter(l => /squeue|slurm/i.test(l))).toEqual([])
+})
+
+test('a session reads a fresh shared result and calls no squeue of its own', async ($, on) => {
+  setup(on)
+  on('ui.log', () => ({ value: undefined }))
+  const host = fakeHost(on, () => ({ exitCode: 0, stdout: '', stderr: '' }))
+  const job = { id: '9', name: 'from-another-tab', state: 'R', elapsed: '1:00', limit: '2:00', where: 'n1', partition: 'gpu' }
+  host.files.set('/h/.claude/mods-data/quarterdeck/shared/squeue.json', JSON.stringify({ lastAt: Date.now(), failures: 0, value: [job] }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise(r => setTimeout(r, 50))
+
+  const pane = await $.ui.mount({ ...PANE('slurm', 'Slurm'), surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: /from-another-tab/ })).toBeTruthy()
+  await pane.unmount()
+  expect(host.calls.filter(c => c === 'squeue')).toEqual([])
+})
+
+test('while another session holds the lock, this one waits for its result', async ($, on) => {
+  setup(on)
+  on('ui.log', () => ({ value: undefined }))
+  const host = fakeHost(on, () => ({ exitCode: 0, stdout: '', stderr: '' }))
+  host.dirs.add('/h/.claude/mods-data/quarterdeck/shared/squeue.lock')
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await new Promise(r => setTimeout(r, 50))
+  expect(host.calls.filter(c => c === 'squeue')).toEqual([])
+  expect(host.dirs.has('/h/.claude/mods-data/quarterdeck/shared/squeue.lock')).toBe(true)
 })

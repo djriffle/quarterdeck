@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import { onGitResume } from './gitpoll'
+import { sharedKey, sharedPoll } from './sharedpoll'
 import type { GitBranch, GitCommit, GitData, GitIssue, GitPR, GitStash, Issue, Snapshot, Worktree } from '../types'
 
 // Owned by gitpoll.tsx (/toggle-git); read here.
@@ -9,8 +10,17 @@ const gitOn = atom({ plugin: 'quarterdeck', key: 'git-on' } as const, true)
 
 export const GIT_PANE = 'git'
 export const GIT_TITLE = 'Git'
+// Both are shared between sessions (sharedpoll.ts): local git per worktree, GitHub per repository.
+// Each session reads the shared result every *_READ_EVERY_MS; one runs the commands once it is due.
 const LOCAL_EVERY_MS = 20_000 // branches, stashes, commits, status: local git, cheap
 const REMOTE_EVERY_MS = 120_000 // issues and PRs: GitHub API
+const LOCAL_READ_EVERY_MS = 5_000
+const REMOTE_READ_EVERY_MS = 15_000
+const GIT_LOCK_STALE_MS = 180_000
+const LOCAL_SECTIONS = ['status', 'branches', 'stashes', 'commits']
+const REMOTE_SECTIONS = ['prs', 'issues']
+// What one shared git poll found: the GitData fields it fills, and the sections that failed.
+type GitPart = { data: Partial<GitData>; errors: Record<string, string> }
 const LIST_LIMIT = 30
 const SHOW = { prs: 12, issues: 12, branches: 16, stashes: 5, commits: 8 }
 const FAILING = new Set(['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'ERROR', 'STARTUP_FAILURE'])
@@ -61,32 +71,34 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
       return r.stdout
     }
 
-    // A section that fails shows its error in the pane (and in the log); the others still draw.
-    const section = async (name: string, f: () => Promise<Partial<GitData>>) => {
+    // A section that fails shows its error in the pane (and in the polling session's log); the others still draw.
+    const section = async (acc: GitPart, name: string, f: () => Promise<Partial<GitData>>) => {
       try {
-        const part = await f()
-        await update($, git, g => {
-          const { [name]: _gone, ...errors } = g.errors
-          return { ...g, ...part, errors, at: Date.now() }
-        })
+        Object.assign(acc.data, await f())
       } catch (err) {
         $.ui.log(`quarterdeck git ${name} refresh failed: ${String(err)}`)
-        await update($, git, g => ({ ...g, errors: { ...g.errors, [name]: oneLine(String(err instanceof Error ? err.message : err)) }, at: Date.now() }))
+        acc.errors[name] = oneLine(String(err instanceof Error ? err.message : err))
       }
     }
+    // Lay one poll's part over the session's git data: its sections' old errors give way to its own.
+    const apply = (part: GitPart, names: string[], at: number) =>
+      update($, git, g => {
+        const errors = Object.fromEntries(Object.entries(g.errors).filter(([k]) => !names.includes(k)))
+        return { ...g, ...part.data, errors: { ...errors, ...part.errors }, at }
+      })
 
     const baseOf = async () => (await run(['git', 'rev-parse', '--abbrev-ref', 'origin/HEAD'])).trim().replace(/^origin\//, '')
 
-    const refreshLocal = async () => {
-      if (!(await read($, gitOn))) return
+    const computeLocal = async (): Promise<GitPart> => {
+      const acc: GitPart = { data: {}, errors: {} }
       let base: string | undefined
-      await section('status', async () => {
+      await section(acc, 'status', async () => {
         base = await baseOf()
         const head = (await run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])).trim()
         const dirty = (await run(['git', 'status', '--porcelain'])).split('\n').filter(Boolean).length
         return { base, head, dirty }
       })
-      await section('branches', async () => {
+      await section(acc, 'branches', async () => {
         if (!base) throw new Error('no default branch (see status)')
         const b = base
         const [refs, merged] = await Promise.all([
@@ -121,7 +133,7 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
           })
         return { branches }
       })
-      await section('stashes', async () => {
+      await section(acc, 'stashes', async () => {
         const out = await run(['git', 'stash', 'list', '--format=%gd|%cr|%gs'])
         const stashes: GitStash[] = out
           .split('\n')
@@ -132,7 +144,7 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
           })
         return { stashes }
       })
-      await section('commits', async () => {
+      await section(acc, 'commits', async () => {
         if (!base) throw new Error('no default branch (see status)')
         const parse = (out: string): GitCommit[] =>
           out
@@ -149,11 +161,12 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
         ])
         return { commits: parse(onBranch), commitsAll: parse(everywhere) }
       })
+      return acc
     }
 
-    const refreshRemote = async () => {
-      if (!(await read($, gitOn))) return
-      await section('prs', async () => {
+    const computeRemote = async (): Promise<GitPart> => {
+      const acc: GitPart = { data: {}, errors: {} }
+      await section(acc, 'prs', async () => {
         const out = await run(
           ['gh', 'pr', 'list', '--state', 'open', '--limit', String(LIST_LIMIT), '--json', 'number,title,headRefName,isDraft,reviewDecision,mergeable,statusCheckRollup,closingIssuesReferences,author,url'],
         )
@@ -171,7 +184,7 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
         }))
         return { prs }
       })
-      await section('issues', async () => {
+      await section(acc, 'issues', async () => {
         const out = await run(['gh', 'issue', 'list', '--state', 'open', '--limit', String(LIST_LIMIT), '--json', 'number,title,labels,assignees,url'])
         const issues: GitIssue[] = (JSON.parse(out) as any[]).map(i => ({
           number: i.number,
@@ -182,21 +195,43 @@ export const registerGitPanel = (on: Parameters<Register>[0]) => {
         }))
         return { issues }
       })
+      return acc
+    }
+
+    // Sessions in one worktree share the local poll; sessions anywhere in one repository share GitHub's.
+    const revParse = async (args: string[]) => {
+      const r = await $.process.run(['git', 'rev-parse', ...args], { cwd })
+      return r.exitCode === 0 ? r.stdout.trim() : undefined
+    }
+    // Outside a repository both are keyed by the folder: the sections then show git's own error.
+    const worktreeRoot = (await revParse(['--show-toplevel'])) ?? cwd
+    const repoRoot = (await revParse(['--path-format=absolute', '--git-common-dir'])) ?? cwd
+    const localPoll = { key: sharedKey('git-local', worktreeRoot), everyMs: LOCAL_EVERY_MS, lockStaleMs: GIT_LOCK_STALE_MS, compute: computeLocal }
+    const remotePoll = { key: sharedKey('git-remote', repoRoot), everyMs: REMOTE_EVERY_MS, lockStaleMs: GIT_LOCK_STALE_MS, compute: computeRemote }
+    const refreshLocal = async (force = false) => {
+      if (!(await read($, gitOn))) return
+      const r = await sharedPoll($, localPoll, force)
+      if (r?.value) await apply(r.value, LOCAL_SECTIONS, r.lastAt)
+    }
+    const refreshRemote = async (force = false) => {
+      if (!(await read($, gitOn))) return
+      const r = await sharedPoll($, remotePoll, force)
+      if (r?.value) await apply(r.value, REMOTE_SECTIONS, r.lastAt)
     }
 
     const guard = (name: string, f: () => Promise<void>) => () => {
       f().catch(err => $.ui.log(`quarterdeck git ${name} refresh failed: ${String(err)}`))
     }
-    const local = guard('local', refreshLocal)
-    const remote = guard('remote', refreshRemote)
+    // A forced refresh (git or gh just ran, or polling came back on) polls now, for every session.
     refreshAll = () => {
-      local()
-      remote()
+      guard('local', () => refreshLocal(true))()
+      guard('remote', () => refreshRemote(true))()
     }
-    refreshAll()
+    guard('local', () => refreshLocal())()
+    guard('remote', () => refreshRemote())()
     onGitResume(refreshAll)
-    $.clock.every(LOCAL_EVERY_MS, local)
-    $.clock.every(REMOTE_EVERY_MS, remote)
+    $.clock.every(LOCAL_READ_EVERY_MS, guard('local', () => refreshLocal()))
+    $.clock.every(REMOTE_READ_EVERY_MS, guard('remote', () => refreshRemote()))
 
     await $.command.register({ name: 'git', description: 'Show issues, PRs, branches, worktrees and stashes in a Git pane' })
     return started

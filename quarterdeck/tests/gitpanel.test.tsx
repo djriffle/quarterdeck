@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { withSharedFs } from './fakehost'
 
 const GIT = {
   plugin: 'quarterdeck',
@@ -20,7 +21,7 @@ test('the Git tab draws PRs, issues, branches and stashes', async ($, on) => {
   on('session.messages', () => ({ value: [] }))
   on('agent.list', () => ({ value: [] }))
   const ok = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-  on('process.run', (_, e) => {
+  withSharedFs(on, (_, e) => {
     const a = e.argv.join(' ')
     if (a.startsWith('gh pr list')) return ok(PRS)
     if (a.startsWith('gh issue list')) return ok(ISSUES)
@@ -56,7 +57,7 @@ test('a failing gh call shows its error in the PR section', async ($, on) => {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.messages', () => ({ value: [] }))
   on('agent.list', () => ({ value: [] }))
-  on('process.run', (_, e) => ({
+  withSharedFs(on, (_, e) => ({
     value: { exitCode: e.argv[0] === 'gh' ? 1 : 0, stdout: '', stderr: e.argv[0] === 'gh' ? 'gh: not logged in' : '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
@@ -74,7 +75,7 @@ test('issues and PRs default to the mentioned ones', async ($, on) => {
   on('session.messages', () => ({ value: [{ role: 'user', text: 'look at issue 5 and PR 7' }] }))
   on('agent.list', () => ({ value: [] }))
   const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-  on('process.run', (_, e) => {
+  withSharedFs(on, (_, e) => {
     const a = e.argv.join(' ')
     if (a.startsWith('gh api') && a.endsWith('/5')) return ok(JSON.stringify({ number: 5, title: 'Mentioned issue five', state: 'open', html_url: 'https://x/5' }))
     if (a.startsWith('gh api') && a.endsWith('/7')) return ok(JSON.stringify({ number: 7, title: 'Mentioned pr seven', state: 'closed', html_url: 'https://x/7', pull_request: {} }))
