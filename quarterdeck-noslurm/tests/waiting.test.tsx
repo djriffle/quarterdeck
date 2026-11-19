@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
-import { CHECK, CROSS, SPIN, elapsed, endTask, foldAgents, glyph, parseNotifications, prune, scanStart, reconcile, tombstone, expire } from '../hooks/waiting'
+import { CHECK, CROSS, SPIN, elapsed, endTask, foldAgents, glyph, parseNotifications, prune, scanStart, startedTasks, wholeRows, reconcile, tombstone, expire } from '../hooks/waiting'
 import type { WaitItem } from '../types'
 
 const agent = (id: string, status: AgentInfo['status']): AgentInfo => ({ id, description: `task ${id}`, type: 'Explore', status })
@@ -175,4 +175,40 @@ test('transcript scans start near the end the first time, then just before where
   expect(scanStart(200 * 1024, 300 * 1024)).toBe(136 * 1024)
   expect(scanStart(10, 300 * 1024)).toBe(0)
   expect(scanStart(500 * 1024, 100 * 1024)).toBe(36 * 1024) // file shrank (rewritten): re-read its tail
+})
+
+// Transcript rows (trimmed) as a session writes them.
+const row = (o: object) => JSON.stringify(o)
+const useRow = (id: string, name: string, input: object, ts: string) =>
+  row({ type: 'assistant', timestamp: ts, message: { content: [{ type: 'tool_use', id, name, input }] } })
+const resultRow = (id: string, result: object, ts: string) =>
+  row({ type: 'user', timestamp: ts, message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] }, toolUseResult: result })
+
+test('a reloaded /waiting rebuilds the running shells and Monitors from the transcript', () => {
+  const t0 = '2026-11-19T17:00:00.000Z'
+  const now = Date.parse(t0) + 60_000
+  const lines = [
+    useRow('u1', 'Monitor', { command: 'tail -f log', description: 'watch job 7050362' }, t0),
+    resultRow('u1', { taskId: 'mon1', timeoutMs: 1_800_000, persistent: false }, t0),
+    useRow('u2', 'Bash', { command: 'pytest', description: 'run tests', run_in_background: true }, t0),
+    resultRow('u2', { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'sh1' }, t0),
+    useRow('u3', 'Bash', { command: 'sleep 5', run_in_background: true }, t0),
+    resultRow('u3', { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'sh2' }, t0),
+    row({ type: 'queue-operation', content: '<task-notification>\n<task-id>sh2</task-id>\n<status>completed</status>\n</task-notification>' }),
+    useRow('u4', 'Monitor', { command: 'watch', description: 'old watch' }, '2026-11-19T15:00:00.000Z'),
+    resultRow('u4', { taskId: 'mon2', timeoutMs: 1_800_000 }, '2026-11-19T15:00:00.000Z'),
+    useRow('u5', 'Bash', { command: 'make', run_in_background: true }, t0),
+    resultRow('u5', { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'sh3' }, t0),
+    useRow('u6', 'TaskStop', { task_id: 'sh3' }, t0),
+  ]
+  const found = startedTasks(lines, now)
+  expect(found.map(f => f.id)).toEqual(['mon1', 'sh1'])
+  expect(found[0].item).toEqual({ kind: 'monitor', label: 'watch job 7050362', detail: 'tail -f log', startedAt: Date.parse(t0), deadline: Date.parse(t0) + 1_800_000 })
+  expect(found[1].item.kind).toBe('shell')
+  expect(found[1].item.label).toBe('run tests')
+})
+
+test('only whole JSONL rows are read', () => {
+  expect(wholeRows('{"a":1}\n{"b":2}\n{"c"', 0)).toEqual(['{"a":1}', '{"b":2}'])
+  expect(wholeRows('t":9}\n{"b":2}\n', 100)).toEqual(['{"b":2}'])
 })
