@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { AgentInfo } from 'claude-code'
-import { CHECK, CROSS, SPIN, elapsed, endTask, foldAgents, glyph, parseNotifications, prune, reconcile, tombstone, expire } from '../hooks/waiting'
+import { CHECK, CROSS, SPIN, elapsed, endTask, foldAgents, glyph, parseNotifications, prune, scanStart, reconcile, tombstone, expire } from '../hooks/waiting'
 import type { WaitItem } from '../types'
 
 const agent = (id: string, status: AgentInfo['status']): AgentInfo => ({ id, description: `task ${id}`, type: 'Explore', status })
@@ -160,4 +160,19 @@ test('a shell that ends with its subagent ends when that agent does', () => {
   expect(items['task:sh9'].endedPhase).toBe(5)
   expect(items['task:sh9'].status).toBe('stopped')
   expect(items['task:sh8'].endedPhase).toBe(undefined)
+})
+
+// A queued notification as the transcript JSONL stores it: newlines escaped inside the JSON string.
+const JSONL_LINE = String.raw`{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>bpah1xwes</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n<status>completed</status>\n<summary>Background command \"pytest\" completed (exit code 0)</summary>\n</task-notification>"}`
+
+test('a notification read raw from the transcript JSONL ends its task', () => {
+  expect(parseNotifications(JSONL_LINE)).toEqual([{ id: 'bpah1xwes', status: 'completed' }])
+})
+
+test('transcript scans start near the end the first time, then just before where the last one stopped', () => {
+  expect(scanStart(undefined, 1000)).toBe(0)
+  expect(scanStart(undefined, 10 * 1024 * 1024)).toBe(6 * 1024 * 1024)
+  expect(scanStart(200 * 1024, 300 * 1024)).toBe(136 * 1024)
+  expect(scanStart(10, 300 * 1024)).toBe(0)
+  expect(scanStart(500 * 1024, 100 * 1024)).toBe(36 * 1024) // file shrank (rewritten): re-read its tail
 })

@@ -7,6 +7,9 @@ import type { WaitItem } from '../types'
 // and Monitor watches still waiting. Each live row spins; a finished row draws a check mark, holds it, then leaves.
 const FRAME_MS = 120
 const POLL_EVERY = 4 // frames between $.agent.list() polls
+const SCAN_EVERY = 16 // frames (~2 s) between transcript scans while a shell or monitor is live
+const SCAN_OVERLAP = 64 * 1024 // bytes re-read before the last offset, so a notification split by a read is seen whole
+const SCAN_MAX = 4 * 1024 * 1024 // most bytes one read takes (the engine's cap); a first scan starts this far from the end
 const HOLD_FRAMES = 50 // ~6 s a finished row stays after its check is drawn
 export const SPIN = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 // The check is drawn stroke by stroke: the short down-stroke, then the long up-stroke, then it settles bold.
@@ -33,6 +36,10 @@ const waitEnded = atom({ plugin: 'reality-plus-noslurm', key: 'waiting-ended' } 
 
 type Engine = Parameters<typeof update>[0]
 let ticker: { cancel: () => void } | undefined
+// Bytes of each transcript already scanned (main and subagents'); module-local, so a reload rescans
+// the last SCAN_MAX of each, which is harmless: ending a task twice changes nothing.
+const scanned = new Map<string, number>()
+let scanning = false
 
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s)
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim()
@@ -140,6 +147,37 @@ export const glyph = (it: WaitItem, phase: number) => {
   return frames[Math.min(frames.length - 1, Math.max(0, phase - it.endedPhase))]
 }
 
+// Where a read starts, given the bytes already scanned (undefined: none yet) and the file's size now.
+export const scanStart = (done: number | undefined, size: number) =>
+  done === undefined ? Math.max(0, size - SCAN_MAX) : Math.max(0, Math.min(done, size) - SCAN_OVERLAP)
+
+// The transcripts record every task notification as it is queued, whether or not a hook saw it
+// arrive. Read what was added since the last scan and end the tasks whose final notification is in
+// it. Subagents' transcripts (`<session>/subagents/*.jsonl`) hold their own shells' notifications.
+async function scanTranscripts($: Engine) {
+  const { transcriptPath } = await $.session.info()
+  if (!transcriptPath) return
+  const paths = [transcriptPath]
+  const subDir = transcriptPath.replace(/\.jsonl$/, '') + '/subagents'
+  if (await $.fs.exists(subDir))
+    for (const f of await $.fs.list(subDir)) if (f.name.endsWith('.jsonl')) paths.push(`${subDir}/${f.name}`)
+  const ends: { id: string; status: string }[] = []
+  for (const path of paths) {
+    const { size } = await $.fs.stat(path)
+    const done = scanned.get(path)
+    if (done === size) continue
+    let offset = scanStart(done, size)
+    while (offset < size) {
+      const length = Math.min(SCAN_MAX, size - offset)
+      // JSONL escapes newlines inside strings; the parser reads either form.
+      ends.push(...parseNotifications(await $.fs.read(path, { offset, length })))
+      offset += length
+    }
+    scanned.set(path, size)
+  }
+  if (ends.length) await record($, (items, phase) => ends.reduce((acc, n) => endTask(acc, n.id, n.status, phase, Date.now()), items))
+}
+
 async function frame($: Engine) {
   const phase = await update($, waitingPhase, n => n + 1)
   const now = Date.now()
@@ -147,6 +185,17 @@ async function frame($: Engine) {
     const agents = await $.agent.list()
     const items = await update($, waitItems, items => prune(expire(foldAgents(items, agents, phase, now), phase, now), phase))
     await update($, waitEnded, ended => tombstone(ended, items))
+  }
+  if (phase % SCAN_EVERY === 0 && !scanning) {
+    const items = await read($, waitItems)
+    if (Object.values(items).some(it => it.kind !== 'agent' && it.endedPhase === undefined)) {
+      scanning = true
+      try {
+        await scanTranscripts($)
+      } finally {
+        scanning = false
+      }
+    }
   }
 }
 
