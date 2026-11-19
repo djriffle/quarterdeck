@@ -150,7 +150,26 @@ export async function toggleTabs($: Engine): Promise<string> {
   return failed.length ? `Tabs not placed: ${failed.join('; ')}` : 'Tabs opened.'
 }
 
-export const registerWorkPanel = (on: Parameters<Register>[0]) => {
+// Slurm job grouping (the `slurmJobGroups` option): jobs whose name matches `re` are grouped under
+// capture group 1 and shown by capture group 2; the rest go under "other". No pattern: one plain list.
+export const groupJobs = (items: Job[], re: RegExp | undefined) => {
+  const groups = new Map<string, { job: Job; label: string }[]>()
+  for (const job of items) {
+    const m = re ? job.name.match(re) : null
+    const key = !re ? '' : m ? (m[1] ?? m[0]) : 'other'
+    const list = groups.get(key) ?? []
+    list.push({ job, label: m?.[2] ?? job.name })
+    groups.set(key, list)
+  }
+  return groups
+}
+
+// A job's short name: capture group 2 of the grouping pattern, else the whole name.
+export const jobLabel = (name: string, re: RegExp | undefined) => (re ? name.match(re)?.[2] : undefined) ?? name
+
+export const registerWorkPanel = (on: Parameters<Register>[0], options: Parameters<Register>[1]) => {
+  // An invalid pattern fails the plugin's load, naming it, rather than drawing ungrouped jobs.
+  const groupRe = options.slurmJobGroups ? new RegExp(String(options.slurmJobGroups)) : undefined
   // Matched: register.tsx holds the mod's one unmatched session.start.
   on('session.start', { isInteractive: [true, false] }, async ($, e, next) => {
     const started = await next(e)
@@ -314,7 +333,7 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
     return { text: opened.isPlaced ? 'Slurm tab opened.' : `Slurm tab not placed: ${opened.reason}` }
   })
 
-  // Your jobs, grouped by Kusama experiment id (kusama-<12 hex>-<stage>), running first.
+  // Your jobs, grouped by the slurmJobGroups pattern when one is set, running first.
   on('ui.render', { component: 'Pane', requestId: SLURM_PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const slurmPolling = await read($, slurmOn)
@@ -322,14 +341,7 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
     const snap = slurmPolling ? await read($, jobs) : { items: [] as Job[], at: 0, error: undefined }
     const running = snap.items.filter(j => j.state === 'R').length
     const pending = snap.items.filter(j => j.state === 'PD').length
-    const groups = new Map<string, { job: Job; label: string }[]>()
-    for (const job of snap.items) {
-      const m = job.name.match(/^kusama-([0-9a-f]{12})-(.*)$/)
-      const key = m ? m[1] : 'other'
-      const list = groups.get(key) ?? []
-      list.push({ job, label: m ? m[2] : job.name })
-      groups.set(key, list)
-    }
+    const groups = groupJobs(snap.items, groupRe)
     const rank = (s: string) => (s === 'R' ? 0 : s === 'PD' ? 1 : 2)
     const ago = snap.at ? Math.round((Date.now() - snap.at) / 1000) : undefined
     return (
@@ -350,10 +362,12 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
         {snap.at > 0 && snap.items.length === 0 && !snap.error && <Text dimColor>No jobs in the queue.</Text>}
         {[...groups.entries()].map(([key, list]) => (
           <Box flexDirection="column" marginTop={1}>
-            <Text color="suggestion" bold>
-              {key === 'other' ? 'other' : `exp ${key}`}
-              <Text color="subtle"> ({list.length})</Text>
-            </Text>
+            {key !== '' && (
+              <Text color="suggestion" bold>
+                {key}
+                <Text color="subtle"> ({list.length})</Text>
+              </Text>
+            )}
             {list
               .sort((a, b) => rank(a.job.state) - rank(b.job.state))
               .map(({ job, label }) => (
@@ -464,7 +478,7 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
           .map(j => (
             <Text wrap="truncate-middle">
               <Text color="suggestion">▶ </Text>
-              {j.name.replace(/^kusama-[0-9a-f]{12}-/, '')}
+              {jobLabel(j.name, groupRe)}
               <Text color="inactive"> {j.elapsed}</Text>
             </Text>
           ))}

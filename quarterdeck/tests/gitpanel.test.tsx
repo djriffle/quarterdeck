@@ -10,7 +10,7 @@ const GIT = {
 
 const PRS = JSON.stringify([
   { number: 24, title: 'Fix memory manager', headRefName: 'memory-manager-fixes', isDraft: false, reviewDecision: 'APPROVED', mergeable: 'MERGEABLE',
-    statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }], closingIssuesReferences: [{ number: 9 }], author: { login: 'djriffle' }, url: 'https://x/pull/24' },
+    statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }], closingIssuesReferences: [{ number: 9 }], author: { login: 'octocat' }, url: 'https://x/pull/24' },
 ])
 const ISSUES = JSON.stringify([{ number: 9, title: 'Memory manager window', labels: [{ name: 'bug' }], assignees: [], url: 'https://x/issues/9' }])
 

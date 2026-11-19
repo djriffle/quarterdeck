@@ -9,12 +9,12 @@ const SLURM = {
 } as const
 
 const QUEUE = [
-  '7036738|kusama-56e9b7322acc-g_kusama_scrambled-s42.train_refit_g|R|21:32|6-00:00:00|iscb022|peerd',
-  '7332900|kusama-56e9b7322acc-compare|PD|0:00|12:00:00|(Dependency)|peerd',
-  '7332823|space_metrics|R|3:53|12:00:00|iscb013|peerd',
+  '1000001|myexp-0123456789ab-train_s42|R|21:32|6-00:00:00|node01|gpu',
+  '1000002|myexp-0123456789ab-compare|PD|0:00|12:00:00|(Dependency)|gpu',
+  '1000003|space_metrics|R|3:53|12:00:00|node02|cpu',
 ].join('\n')
 
-test('the Slurm tab groups jobs by experiment', async ($, on) => {
+const slurmTab = async ($: Parameters<Parameters<typeof test>[1]>[0], on: Parameters<Parameters<typeof test>[1]>[1]) => {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'x' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -24,10 +24,22 @@ test('the Slurm tab groups jobs by experiment', async ($, on) => {
   fakeHost(on, () => ({ exitCode: 0, stdout: QUEUE, stderr: '' }))
   await $.session.start({ cwd: '/x', surface: 'terminal', isInteractive: true })
   await new Promise(r => setTimeout(r, 50))
-  const ui = await $.ui.mount({ ...SLURM, surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: /exp 56e9b7322acc/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /g_kusama_scrambled/ })).toBeTruthy()
+  return $.ui.mount({ ...SLURM, surface: 'terminal' })
+}
+
+test('with slurmJobGroups set, the Slurm tab groups matching jobs and shows their short names', { options: { slurmJobGroups: '^(myexp-[0-9a-f]{12})-(.*)$' } }, async ($, on) => {
+  const ui = await slurmTab($, on)
+  expect(await ui.find({ type: 'Text', text: /myexp-0123456789ab/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^other/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /train_s42/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /Dependency/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('with no slurmJobGroups, the Slurm tab lists every job with no group headers', async ($, on) => {
+  const ui = await slurmTab($, on)
+  expect(await ui.find({ type: 'Text', text: /myexp-0123456789ab-train_s42/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^other/ })).toBeFalsy()
   await ui.unmount()
 })
 

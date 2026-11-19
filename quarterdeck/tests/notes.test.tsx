@@ -52,7 +52,7 @@ test('the pane shows the notes stored for this session', async ($, on) => {
   const writes: { path: string; text: string }[] = []
   engine(on, writes)
   const held = store(on, { 'notes-sess-abc': SEEDED, 'notes-other': [{ id: 'x', at: 0, text: 'not mine' }] })
-  await $.session.start({ cwd: '/x/Kusama', surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: '/x/Demo', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /check the s42 smoke/ }))?.text).toBeTruthy()
@@ -68,7 +68,7 @@ test('typing in the pane appends a note, stores it and mirrors it as markdown', 
   const writes: { path: string; text: string }[] = []
   engine(on, writes)
   const held = store(on, { 'notes-sess-abc': SEEDED })
-  await $.session.start({ cwd: '/x/Kusama', surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: '/x/Demo', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.input({ key: 'notes-input', text: 'rerun p1_cell_cycle_dapi' })
@@ -90,7 +90,7 @@ test('editing a note replaces its text', async ($, on) => {
   const writes: { path: string; text: string }[] = []
   engine(on, writes)
   const held = store(on, { 'notes-sess-abc': SEEDED })
-  await $.session.start({ cwd: '/x/Kusama', surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: '/x/Demo', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'notes-edit-n2' })
@@ -106,7 +106,7 @@ test('/note appends from the prompt and /notes share hands them to Claude', asyn
   const writes: { path: string; text: string }[] = []
   engine(on, writes)
   store(on)
-  await $.session.start({ cwd: '/x/Kusama', surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: '/x/Demo', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /No notes yet/ })).toBeTruthy()
@@ -128,7 +128,7 @@ test('a stored value that is not a list of notes shows in red and is never overw
   const writes: { path: string; text: string }[] = []
   engine(on, writes)
   const held = store(on, { 'notes-sess-abc': { broken: true } })
-  await $.session.start({ cwd: '/x/Kusama', surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: '/x/Demo', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /loading notes failed/ }))?.text).toContain('not overwriting')
