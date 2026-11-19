@@ -66,9 +66,9 @@ test('a failed poll keeps the last value known', () => {
 })
 
 test('shared keys are file-safe, readable and distinct per path', () => {
-  const a = sharedKey('git', '/data1/x/CARIBOU')
-  expect(a).toMatch(/^git-x_CARIBOU-[0-9a-z]+$/)
-  expect(sharedKey('git', '/data2/x/CARIBOU')).not.toBe(a)
+  const a = sharedKey('git', '/data1/x/project')
+  expect(a).toMatch(/^git-x_project-[0-9a-z]+$/)
+  expect(sharedKey('git', '/data2/x/project')).not.toBe(a)
 })
 
 test('a squeue timeout reads as one', () => {

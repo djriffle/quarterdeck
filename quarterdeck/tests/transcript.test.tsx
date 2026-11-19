@@ -20,7 +20,7 @@ const PATCH = [
   { oldStart: 3, oldLines: 3, newStart: 3, newLines: 4, lines: [' keep', '-old line', '+new line', '+another', ' tail'] },
 ]
 const EDIT_OUTPUT = {
-  filePath: '/x/Kusama/src/a.py',
+  filePath: '/x/Demo/src/a.py',
   oldString: 'old line',
   newString: 'new line\nanother',
   originalFile: null,
@@ -37,7 +37,7 @@ const EDIT_USE = {
   props: {
     tool_use_id: 'tu-edit',
     tool: 'Edit',
-    input: { file_path: '/x/Kusama/src/a.py', old_string: 'old line', new_string: 'new line\nanother' },
+    input: { file_path: '/x/Demo/src/a.py', old_string: 'old line', new_string: 'new line\nanother' },
     isRunning: false,
     isErrored: false,
     isInterrupted: false,

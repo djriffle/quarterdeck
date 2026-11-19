@@ -83,7 +83,7 @@ const MONITOR_END = `<task-notification>
 <tool-use-id>toolu_012pwuV9MdVRPGx112nuWQeq</tool-use-id>
 <output-file>/tmp/tasks/bz7c6ez3w.output</output-file>
 <status>completed</status>
-<summary>Monitor "cfm_rename pytest job 7050362 finish" stream ended</summary>
+<summary>Monitor "pytest job 1234567 finish" stream ended</summary>
 <event>JOB ENDED
 1 failed, 578 passed, 2 skipped, 1394 warnings in 428.16s (0:07:08)
 PYTEST_EXIT=1</event>
@@ -91,7 +91,7 @@ PYTEST_EXIT=1</event>
 const MONITOR_EVENT = `<task-notification>
 <task-id>bn5fz5aki</task-id>
 <summary>Monitor event: "smoke job state changes"</summary>
-<event>11251856|kusama-generate|RUNNING</event>
+<event>1234568|demo-generate|RUNNING</event>
 </task-notification>`
 
 test('a Monitor end ends its row; a Monitor event does not; batched notifications all end', () => {
@@ -188,7 +188,7 @@ test('a reloaded /waiting rebuilds the running shells and Monitors from the tran
   const t0 = '2026-11-19T17:00:00.000Z'
   const now = Date.parse(t0) + 60_000
   const lines = [
-    useRow('u1', 'Monitor', { command: 'tail -f log', description: 'watch job 7050362' }, t0),
+    useRow('u1', 'Monitor', { command: 'tail -f log', description: 'watch job 1234567' }, t0),
     resultRow('u1', { taskId: 'mon1', timeoutMs: 1_800_000, persistent: false }, t0),
     useRow('u2', 'Bash', { command: 'pytest', description: 'run tests', run_in_background: true }, t0),
     resultRow('u2', { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'sh1' }, t0),
@@ -203,7 +203,7 @@ test('a reloaded /waiting rebuilds the running shells and Monitors from the tran
   ]
   const found = startedTasks(lines, now)
   expect(found.map(f => f.id)).toEqual(['mon1', 'sh1'])
-  expect(found[0].item).toEqual({ kind: 'monitor', label: 'watch job 7050362', detail: 'tail -f log', startedAt: Date.parse(t0), deadline: Date.parse(t0) + 1_800_000 })
+  expect(found[0].item).toEqual({ kind: 'monitor', label: 'watch job 1234567', detail: 'tail -f log', startedAt: Date.parse(t0), deadline: Date.parse(t0) + 1_800_000 })
   expect(found[1].item.kind).toBe('shell')
   expect(found[1].item.label).toBe('run tests')
 })

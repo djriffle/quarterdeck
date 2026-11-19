@@ -1,7 +1,5 @@
 # quarterdeck
 
-Personal Claude Code mods, as a plugin marketplace (`riffled-mods`).
-
 | Mod | For |
 | --- | --- |
 | `quarterdeck` | The full skin, including Slurm queue views. Use it on an HPC cluster where `squeue` is available. |
@@ -69,13 +67,35 @@ then set `"theme": "custom:quarterdeck"` in `~/.claude/settings.json`.
 
 ```
 /plugin marketplace add djriffle/quarterdeck
-/plugin install quarterdeck@riffled-mods
+/plugin install quarterdeck@quarterdeck
 ```
 
 or, without Slurm:
 
 ```
-/plugin install quarterdeck-noslurm@riffled-mods
+/plugin install quarterdeck-noslurm@quarterdeck
 ```
+
+### Grouping Slurm jobs
+
+The Slurm tab can group your jobs by name. Set the `slurmJobGroups` option to a regular expression: jobs whose name matches are grouped under capture group 1 and shown by capture group 2 (or their whole name); the rest go under `other`. Left empty (the default), the tab is one plain list.
+
+For jobs named `myexp-<12 hex>-<stage>`, grouped by experiment and shown by stage:
+
+```
+^(myexp-[0-9a-f]{12})-(.*)$
+```
+
+Set it in `/config`, or from the command line:
+
+```
+echo '{"slurmJobGroups": "^(myexp-[0-9a-f]{12})-(.*)$"}' | claude plugin configure quarterdeck@quarterdeck --values-stdin
+```
+
+An invalid pattern stops the mod from loading, with the error naming it.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
 
 Check and test with `claude plugin validate <mod>` and `claude plugin test <mod>` (run `test` from inside the mod's directory).

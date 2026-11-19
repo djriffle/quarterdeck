@@ -63,12 +63,12 @@ const bar = (done: number, total: number, width = 10) => {
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
 
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
   registerTranscript(on)
   registerWrapUp(on)
   registerFileTree(on)
   registerNotes(on)
-  registerWorkPanel(on)
+  registerWorkPanel(on, options)
   registerWindDown(on)
   registerWave(on)
   registerNotify(on)
