@@ -16,6 +16,19 @@ const TITLE = 'Work'
 const SLURM_PANE = 'slurm'
 const SLURM_TITLE = 'Slurm'
 const SLURM_EVERY_MS = 20_000
+// squeue can hang while the Slurm controller is busy; a call past this is cut off and shown as an error.
+const SQUEUE_TIMEOUT_MS = 20_000
+// After this many failed polls in a row, squeue is asked only every SLURM_BACKOFF_MS until one succeeds.
+const SLURM_FAILS_BEFORE_BACKOFF = 2
+const SLURM_BACKOFF_MS = 300_000
+
+// Whether a 20 s beat should call squeue, given the failures in a row and when the last call started.
+export const shouldPollSlurm = (failures: number, lastAt: number, now: number) =>
+  failures < SLURM_FAILS_BEFORE_BACKOFF || now - lastAt >= SLURM_BACKOFF_MS
+
+// What a rejected squeue call shows: a timeout reads as one.
+export const squeueError = (err: unknown) =>
+  /still running after/.test(String(err)) ? `squeue timed out after ${SQUEUE_TIMEOUT_MS / 1000}s` : String(err)
 const PANE_BG = 'rgb(20,20,20)'
 // Issues and PRs this session touched: numbers you typed (#385, "issue 385") and
 // numbers Claude's gh commands acted on. Details refreshed from GitHub.
@@ -221,13 +234,37 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
     })
     $.clock.every(ISSUES_EVERY_MS, guard('issues', refreshIssues))
     $.clock.every(WORKTREES_EVERY_MS, guard('worktrees', refreshWorktrees))
+    // One squeue at a time: a beat that lands while the last call still runs is skipped, so a slow
+    // controller is not handed a pile of queued calls. A call that fails or times out is drawn as the
+    // snapshot's error (HUD, Slurm and Work tabs), with the last jobs kept, rather than logged each beat.
+    // Two failures in a row (timeout or error) slow polling to every 5 minutes; a success restores 20 s.
+    let squeueRunning = false
+    let squeueFailures = 0
+    let squeueLastAt = 0
+    const failJobs = async (msg: string) => {
+      squeueFailures++
+      const slowed = squeueFailures >= SLURM_FAILS_BEFORE_BACKOFF ? ` · ${squeueFailures} failures in a row, retrying every ${SLURM_BACKOFF_MS / 60_000} min` : ''
+      await update($, jobs, s => ({ ...s, error: oneLine(msg, 200) + slowed, at: Date.now() }))
+    }
     const refreshJobs = async () => {
-      if (!(await read($, slurmOn))) return
-      const r = await $.process.run(['squeue', '--me', '-h', '-o', '%i|%j|%t|%M|%l|%R|%P'], { timeoutMs: 20_000 })
+      if (squeueRunning || !(await read($, slurmOn))) return
+      if (!shouldPollSlurm(squeueFailures, squeueLastAt, Date.now())) return
+      squeueRunning = true
+      squeueLastAt = Date.now()
+      let r
+      try {
+        r = await $.process.run(['squeue', '--me', '-h', '-o', '%i|%j|%t|%M|%l|%R|%P'], { timeoutMs: SQUEUE_TIMEOUT_MS })
+      } catch (err) {
+        await failJobs(squeueError(err))
+        return
+      } finally {
+        squeueRunning = false
+      }
       if (r.exitCode !== 0) {
-        await update($, jobs, s => ({ ...s, error: oneLine(r.stderr || `squeue exited ${r.exitCode}`, 200), at: Date.now() }))
+        await failJobs(r.stderr || `squeue exited ${r.exitCode}`)
         return
       }
+      squeueFailures = 0
       const items: Job[] = r.stdout
         .split('\n')
         .filter(Boolean)
@@ -240,7 +277,11 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
       await update($, jobs, () => ({ items, at: Date.now() }))
     }
     guard('slurm', refreshJobs)()
-    onSlurmResume(guard('slurm', refreshJobs))
+    // Turning polling back on by hand tries at once, whatever the backoff.
+    onSlurmResume(() => {
+      squeueFailures = 0
+      guard('slurm', refreshJobs)()
+    })
     $.clock.every(SLURM_EVERY_MS, guard('slurm', refreshJobs))
     $.clock.every(AGENTS_EVERY_MS, () => {
       void update($, tick, n => n + 1)
