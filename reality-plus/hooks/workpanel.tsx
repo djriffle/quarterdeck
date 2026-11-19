@@ -4,9 +4,12 @@ import type { Register } from 'claude-code'
 import type { Issue, Job, Worktree } from '../types'
 import { GIT_PANE, GIT_TITLE, registerGitPanel } from './gitpanel'
 import { onGitResume } from './gitpoll'
+import { onSlurmResume } from './slurmpoll'
 
 // Owned by gitpoll.tsx (/toggle-git); read here.
 const gitOn = atom({ plugin: 'reality-plus', key: 'git-on' } as const, true)
+// Owned by slurmpoll.tsx (/toggle-slurm); read here.
+const slurmOn = atom({ plugin: 'reality-plus', key: 'slurm-on' } as const, true)
 
 const PANE = 'work-panel'
 const TITLE = 'Work'
@@ -219,6 +222,7 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
     $.clock.every(ISSUES_EVERY_MS, guard('issues', refreshIssues))
     $.clock.every(WORKTREES_EVERY_MS, guard('worktrees', refreshWorktrees))
     const refreshJobs = async () => {
+      if (!(await read($, slurmOn))) return
       const r = await $.process.run(['squeue', '--me', '-h', '-o', '%i|%j|%t|%M|%l|%R|%P'], { timeoutMs: 20_000 })
       if (r.exitCode !== 0) {
         await update($, jobs, s => ({ ...s, error: oneLine(r.stderr || `squeue exited ${r.exitCode}`, 200), at: Date.now() }))
@@ -236,6 +240,7 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
       await update($, jobs, () => ({ items, at: Date.now() }))
     }
     guard('slurm', refreshJobs)()
+    onSlurmResume(guard('slurm', refreshJobs))
     $.clock.every(SLURM_EVERY_MS, guard('slurm', refreshJobs))
     $.clock.every(AGENTS_EVERY_MS, () => {
       void update($, tick, n => n + 1)
@@ -262,7 +267,9 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
   // Your jobs, grouped by Kusama experiment id (kusama-<12 hex>-<stage>), running first.
   on('ui.render', { component: 'Pane', requestId: SLURM_PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
-    const snap = await read($, jobs)
+    const slurmPolling = await read($, slurmOn)
+    // While polling is off the last snapshot is stale: show no jobs rather than old ones.
+    const snap = slurmPolling ? await read($, jobs) : { items: [] as Job[], at: 0, error: undefined }
     const running = snap.items.filter(j => j.state === 'R').length
     const pending = snap.items.filter(j => j.state === 'PD').length
     const groups = new Map<string, { job: Job; label: string }[]>()
@@ -287,8 +294,9 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
           {snap.items.length - running - pending > 0 && <Text color="inactive"> · {snap.items.length - running - pending} other</Text>}
           {ago !== undefined && <Text color="subtle"> · {ago}s ago</Text>}
         </Text>
-        {snap.at === 0 && !snap.error && <Text dimColor>loading…</Text>}
-        {snap.error && <Text color="red" wrap="truncate-end">squeue: {snap.error}</Text>}
+        {!slurmPolling && <Text color="inactive">slurm polling off · /toggle-slurm to resume</Text>}
+        {slurmPolling && snap.at === 0 && !snap.error && <Text dimColor>loading…</Text>}
+        {slurmPolling && snap.error && <Text color="red" wrap="truncate-end">squeue: {snap.error}</Text>}
         {snap.at > 0 && snap.items.length === 0 && !snap.error && <Text dimColor>No jobs in the queue.</Text>}
         {[...groups.entries()].map(([key, list]) => (
           <Box flexDirection="column" marginTop={1}>
@@ -347,7 +355,8 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Link } = $.ui.resolve(e)
-    const queue = await read($, jobs)
+    const slurmPolling = await read($, slurmOn)
+    const queue = slurmPolling ? await read($, jobs) : { items: [] as Job[], at: 0, error: undefined }
     await read($, tick)
     const iss = await read($, issues)
     const wts = await read($, worktrees)
@@ -397,7 +406,8 @@ export const registerWorkPanel = (on: Parameters<Register>[0]) => {
           <Text color="suggestion">▶{queue.items.filter(j => j.state === 'R').length}</Text>
           <Text color="inactive"> ⏸{queue.items.filter(j => j.state === 'PD').length}</Text>
         </Text>
-        {queue.error && <Text color="red" wrap="truncate-end">squeue: {queue.error}</Text>}
+        {!slurmPolling && <Text color="inactive">slurm polling off · /toggle-slurm to resume</Text>}
+        {slurmPolling && queue.error && <Text color="red" wrap="truncate-end">squeue: {queue.error}</Text>}
         {queue.items
           .filter(j => j.state === 'R')
           .slice(0, 4)

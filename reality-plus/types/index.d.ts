@@ -1,4 +1,4 @@
-export type Hud = { branch: string; running: number; pending: number; slurmError?: string }
+export type Hud = { branch: string; running: number; pending: number; slurmError?: string; isSlurmOff?: boolean }
 export type TaskItem = { subject: string; status: string }
 export type Goal = {
   condition?: string
@@ -149,6 +149,7 @@ declare module 'claude-code' {
       'holding-on': boolean
       'label-text': string
       'git-on': boolean
+      'slurm-on': boolean
       'git-prs-all': boolean
       'git-views': Shaped<Record<string, boolean>>
       hud: Shaped<Hud>

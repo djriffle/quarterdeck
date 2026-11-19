@@ -14,9 +14,12 @@ import { registerWaiting, waitingBox } from './waiting'
 import { holdingBar, registerHolding } from './holding'
 import { labelBar, registerLabel } from './label'
 import { onGitResume, registerGitPoll } from './gitpoll'
+import { onSlurmResume, registerSlurmPoll } from './slurmpoll'
 
 // Owned by gitpoll.tsx (/toggle-git); read here.
 const gitOn = atom({ plugin: 'reality-plus', key: 'git-on' } as const, true)
+// Owned by slurmpoll.tsx (/toggle-slurm); read here.
+const slurmOn = atom({ plugin: 'reality-plus', key: 'slurm-on' } as const, true)
 
 // Colours are theme keys, so the skin follows ~/.claude/themes/reality-plus.json
 // (pick "Reality+" in /theme): Claude's traditional orange #D77757 as the one
@@ -71,6 +74,7 @@ export const register: Register = on => {
   registerHolding(on)
   registerLabel(on)
   registerGitPoll(on)
+  registerSlurmPoll(on)
   let project = 'SESSION'
 
   on('session.start', async ($, e, next) => {
@@ -78,13 +82,17 @@ export const register: Register = on => {
     const cwd = e.cwd
     project = (cwd.replace(/\/+$/, '').split('/').pop() ?? 'session').toUpperCase()
 
+    // Git and Slurm are polled apart, so either can be switched off (/toggle-git, /toggle-slurm).
     const refresh = async () => {
-      if (!(await read($, gitOn))) {
-        await update($, hud, h => ({ ...h, branch: 'git off' }))
+      let branch = 'git off'
+      if (await read($, gitOn)) {
+        const git = await $.process.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd })
+        branch = git.exitCode === 0 ? git.stdout.trim() : 'no-git'
+      }
+      if (!(await read($, slurmOn))) {
+        await update($, hud, () => ({ branch, running: 0, pending: 0, isSlurmOff: true }))
         return
       }
-      const git = await $.process.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd })
-      const branch = git.exitCode === 0 ? git.stdout.trim() : 'no-git'
       const sq = await $.process.run(['squeue', '--me', '-h', '-o', '%t'], { timeoutMs: 20_000 })
       if (sq.exitCode !== 0) {
         await update($, hud, () => ({ branch, running: 0, pending: 0, slurmError: sq.stderr.trim().slice(0, 60) || `exit ${sq.exitCode}` }))
@@ -102,6 +110,7 @@ export const register: Register = on => {
     }
     run()
     onGitResume(run)
+    onSlurmResume(run)
     $.clock.every(HUD_EVERY_MS, run)
 
     // Session name. Current Claude Code keeps the /rename title in a sidecar file,
@@ -249,7 +258,9 @@ export const register: Register = on => {
         {sep}
         <Text color={SIGNAL}>⑂ {hudState.branch}</Text>
         {sep}
-        {hudState.slurmError ? (
+        {hudState.isSlurmOff ? (
+          <Text color={DIM}>SLURM off</Text>
+        ) : hudState.slurmError ? (
           <Text color="error">SLURM ✗ {hudState.slurmError}</Text>
         ) : (
           <Text>
