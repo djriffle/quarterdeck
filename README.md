@@ -67,13 +67,13 @@ then set `"theme": "custom:quarterdeck"` in `~/.claude/settings.json`.
 
 ```
 /plugin marketplace add djriffle/quarterdeck
-/plugin install quarterdeck@djriffle
+/plugin install quarterdeck@djriffle-msk
 ```
 
 or, without Slurm:
 
 ```
-/plugin install quarterdeck-noslurm@djriffle
+/plugin install quarterdeck-noslurm@djriffle-msk
 ```
 
 ### Grouping Slurm jobs
@@ -89,7 +89,7 @@ For jobs named `myexp-<12 hex>-<stage>`, grouped by experiment and shown by stag
 Set it in `/config`, or from the command line:
 
 ```
-echo '{"slurmJobGroups": "^(myexp-[0-9a-f]{12})-(.*)$"}' | claude plugin configure quarterdeck@djriffle --values-stdin
+echo '{"slurmJobGroups": "^(myexp-[0-9a-f]{12})-(.*)$"}' | claude plugin configure quarterdeck@djriffle-msk --values-stdin
 ```
 
 An invalid pattern stops the mod from loading, with the error naming it.
