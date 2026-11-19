@@ -1,4 +1,4 @@
-# claude-mods
+# quarterdeck
 
 Personal Claude Code mods, as a plugin marketplace (`riffled-mods`).
 
@@ -68,7 +68,7 @@ then set `"theme": "custom:quarterdeck"` in `~/.claude/settings.json`.
 ## Install
 
 ```
-/plugin marketplace add djriffle/claude-mods
+/plugin marketplace add djriffle/quarterdeck
 /plugin install quarterdeck@riffled-mods
 ```
 
